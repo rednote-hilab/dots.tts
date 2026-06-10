@@ -71,6 +71,30 @@ The constraints file pins the recommended versions. To use other compatible
 versions, omit `-c constraints/recommended.txt`; the compatibility ranges are
 declared in `pyproject.toml`.
 
+### Download Checkpoints
+
+The `hf` CLI is installed automatically as part of `huggingface-hub` above.
+Verify it is available:
+
+```bash
+hf --version
+```
+
+Then download a pretrained checkpoint:
+
+```bash
+hf download rednote-hilab/dots.tts-soar --local-dir pretrained_models/dots.tts-soar
+```
+
+| Checkpoint | Hugging Face ID | Description |
+|---|---|---|
+| **dots.tts-soar** | `rednote-hilab/dots.tts-soar` | SCA self-corrective aligned — best overall quality |
+| **dots.tts-base** | `rednote-hilab/dots.tts-base` | Pretrained base model (2B) |
+| **dots.tts-mf** | `rednote-hilab/dots.tts-mf` | MeanFlow distilled, NFE=4 — fastest inference |
+
+All checkpoints are 2B parameters and released under Apache-2.0. Choose **soar** for best
+quality, or **mf** for faster sampling with fewer flow steps.
+
 ### CLI
 
 The package installs a `dots.tts` entry point:
