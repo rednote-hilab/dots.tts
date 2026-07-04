@@ -12,7 +12,7 @@ from transformers import Qwen2Config, Qwen2ForCausalLM
 
 from dots_tts.models.dots_tts.config import ModelConfig
 from dots_tts.modules.backbone.dit import DiT
-from dots_tts.modules.backbone.semantic_encoder import VAESemanticEncoder
+from dots_tts.modules.backbone.encoder import VAESemanticEncoder
 from dots_tts.utils.tokenizer import (
     AUDIO_COMP_SPAN_TOKEN,
     AUDIO_GEN_SPAN_TOKEN,
