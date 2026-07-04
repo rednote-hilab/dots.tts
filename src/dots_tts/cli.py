@@ -72,6 +72,12 @@ def parse_args(argv=None):
         help="Maximum total audio patch count (prompt + generated)",
     )
     parser.add_argument(
+        "--max-sequence-length",
+        type=int,
+        default=2048,
+        help="Maximum LLM sequence length used for schedule validation and optimized StaticCache",
+    )
+    parser.add_argument(
         "--normalize-text",
         action="store_true",
         help="Whether to normalize text before inference",
@@ -80,6 +86,11 @@ def parse_args(argv=None):
         "--profile-inference",
         action="store_true",
         help="Collect per-module inference timing statistics",
+    )
+    parser.add_argument(
+        "--profile-inference-calls",
+        action="store_true",
+        help="Log each profiled inference call timing",
     )
     return parser.parse_args(argv)
 
@@ -90,6 +101,7 @@ def main(argv=None):
     from loguru import logger
 
     from dots_tts.runtime import DotsTtsRuntime
+    from dots_tts.utils.logging import categorized_log as logc
     from dots_tts.utils.logging import configure_logging
     from dots_tts.utils.util import seed_everything
 
@@ -99,7 +111,7 @@ def main(argv=None):
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     logger.info(
-        "CLI command started: model={} output={} seed={}",
+        logc("cli", "CLI command started: model={} output={} seed={}"),
         args.model_name_or_path,
         output_path,
         args.seed,
@@ -112,6 +124,7 @@ def main(argv=None):
             cache_dir=args.cache_dir,
             precision=args.precision,
             max_generate_length=args.max_generate_length,
+            max_sequence_length=args.max_sequence_length,
         )
         result = runtime.generate(
             text=args.text,
@@ -124,7 +137,8 @@ def main(argv=None):
             guidance_scale=args.guidance_scale,
             speaker_scale=args.speaker_scale,
             normalize_text=args.normalize_text,
-            profile_inference=args.profile_inference,
+            profile_inference=args.profile_inference or args.profile_inference_calls,
+            log_profile_calls=args.profile_inference_calls,
         )
         sf.write(
             output_path,
@@ -133,14 +147,17 @@ def main(argv=None):
         )
     except Exception:
         logger.exception(
-            "CLI inference failed: model={} output={}",
+            logc("cli", "CLI inference failed: model={} output={}"),
             args.model_name_or_path,
             output_path,
         )
         raise
 
     logger.info(
-        "CLI output written: request_id={} output={} sample_rate={} samples={}",
+        logc(
+            "cli",
+            "CLI output written: request_id={} output={} sample_rate={} samples={}",
+        ),
         result["fid"],
         output_path,
         result["sample_rate"],

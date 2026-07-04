@@ -5,10 +5,9 @@ import json
 import math
 import shutil
 from collections import OrderedDict
-from dataclasses import dataclass
-from functools import partial
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Iterator
 
 import torch
 import torch.nn as nn
@@ -20,9 +19,20 @@ from transformers import AutoTokenizer, Qwen2Config
 
 from dots_tts.models.dots_tts.config import ModelConfig
 from dots_tts.models.dots_tts.core import DotsTtsCore, DotsTtsForwardOutput
+from dots_tts.modules.backbone.dit_inference import (
+    DiTInferenceContext,
+    DiTSolver,
+    DiTSolverState,
+)
+from dots_tts.modules.backbone.encoder_inference import (
+    SemanticEncoderInference,
+)
+from dots_tts.modules.backbone.llm_inference import LLMInference, LLMInferenceState
 from dots_tts.modules.speaker.encoder import SpeakerXVectorFeatures
 from dots_tts.modules.vocoder.bigvgan import AudioVAE
+from dots_tts.modules.vocoder.vocoder_inference import VocoderInference
 from dots_tts.training.losses import LossMasks, LossTerm, LossTerms
+from dots_tts.utils.logging import categorized_log as logc
 from dots_tts.utils.profiling import measure_inference
 from dots_tts.utils.tokenizer import AUDIO_GEN_START_TOKEN, require_token_id
 from dots_tts.utils.util import get_dtype
@@ -30,14 +40,15 @@ from dots_tts.utils.util import get_dtype
 
 @dataclass
 class _GenerateState:
-    llm_cache: Any | None = None
     llm_hiddens: torch.Tensor | None = None
+    llm_state: LLMInferenceState = field(default_factory=LLMInferenceState)
     patch_encoder_state: Any | None = None
     fm_seq_len: int = 0
     fm_capacity: int = 0
     fm_sequence: torch.Tensor | None = None
     fm_cfg_sequence: torch.Tensor | None = None
     fm_null_g_cond: torch.Tensor | None = None
+    fm_dit_state: DiTSolverState = field(default_factory=DiTSolverState)
     end_flag: bool = False
 
 
@@ -54,73 +65,14 @@ class _PromptFeatureCacheEntry:
     prompt_latent_distribution: torch.Tensor | None = None
 
 
-@dataclass(frozen=True)
-class _GenerateLengthBucket:
-    size: int
-
-    def run_warmup(
-        self,
-        model: "DotsTtsModel",
-        *,
-        precision: str,
-        ode_method: str,
-        num_steps: int,
-        guidance_scale: float,
-    ) -> None:
-        model._warmup_fm_bucket(
-            max_audio_patch_count=self.size,
-            precision=precision,
-            ode_method=ode_method,
-            num_steps=num_steps,
-            guidance_scale=guidance_scale,
-        )
-        model._warmup_patch_encoder_bucket(
-            max_audio_patch_count=self.size,
-            precision=precision,
-        )
-        device = next(model.core.parameters()).device
-        generation_schedule = torch.full(
-            (1, self.size + 1),
-            fill_value=model.core.audio_gen_span_id,
-            dtype=torch.long,
-            device=device,
-        )
-        generation_schedule[0, 0] = model.audio_gen_start_id
-        warmup_inputs = {"generation_schedule": generation_schedule}
-
-        for _ in model.generate_audio_stream(
-            warmup_inputs,
-            precision=precision,
-            ode_method=ode_method,
-            num_steps=num_steps,
-            guidance_scale=guidance_scale,
-        ):
-            return
-        raise RuntimeError(
-            f"Warmup produced no audio chunk for generate bucket {self.size}."
-        )
-
-
 class DotsTtsModel(nn.Module):
     """Full train/infer model assembly around the dots.tts core network."""
 
-    _GENERATE_LENGTH_BUCKETS = (
-        _GenerateLengthBucket(32),
-        _GenerateLengthBucket(64),
-        _GenerateLengthBucket(128),
-        _GenerateLengthBucket(256),
-        _GenerateLengthBucket(512),
-        _GenerateLengthBucket(1024),
-    )
-    _COMPILE_TARGETS = frozenset(
-        {
-            "FM",
-            "patch_encoder",
-            "vocoder",
-        }
-    )
+    _GENERATE_LENGTH_BUCKETS = (64, 128, 256, 512)
     _optimize_enabled = True
     _PROMPT_FEATURE_CACHE_MAX_ENTRIES = 256
+    VOCODER_STREAM_INITIAL_UNMERGED_PATCHES = 2
+    DEFAULT_MAX_SEQUENCE_LENGTH = 2048
     CONFIG_FILENAME = "config.json"
     HF_MODEL_TYPE = "dots_tts"
     HF_ARCHITECTURES = ["DotsTTSForConditionalGeneration"]
@@ -150,7 +102,9 @@ class DotsTtsModel(nn.Module):
         super().__init__()
         self.config = config
         self.tokenizer = tokenizer
-        self.latent_stats_path = Path(latent_stats_path)
+        self.latent_stats_path = (
+            None if latent_stats_path is None else Path(latent_stats_path)
+        )
         self.audio_gen_start_id = require_token_id(
             self.tokenizer, AUDIO_GEN_START_TOKEN
         )
@@ -175,19 +129,46 @@ class DotsTtsModel(nn.Module):
         for param in self.xvector_extractor.parameters():
             param.requires_grad = False
         self._optimize_enabled = True
-        self._compiled_models: dict[
-            tuple[str, tuple[Any, ...] | None], Callable[..., Any]
-        ] = {}
+        self._llm_max_sequence_length = self.DEFAULT_MAX_SEQUENCE_LENGTH
+        self._static_generate_workspaces: dict[tuple[Any, ...], dict[str, Any]] = {}
         self._prompt_feature_cache: OrderedDict[
             str, _PromptFeatureCacheEntry
         ] = OrderedDict()
-        self._static_generate_workspaces: dict[tuple[Any, ...], dict[str, Any]] = {}
-        self._fm_decode_workspaces: dict[tuple[Any, ...], dict[str, torch.Tensor]] = {}
+        self._fm_dit_solvers: dict[tuple[str, bool], DiTSolver] = {}
+        self._llm_inference: LLMInference | None = None
+        self._llm_inference_core_id: int | None = None
+        self._patch_encoder_inference: SemanticEncoderInference | None = None
+        self._patch_encoder_inference_encoder_id: int | None = None
+        self._vocoder_inference: VocoderInference | None = None
+        self._vocoder_inference_vocoder_id: int | None = None
 
-    def set_optimize(self, optimize: bool) -> None:
+    def set_optimize(
+        self,
+        optimize: bool,
+        *,
+        max_sequence_length: int | None = None,
+    ) -> None:
+        if max_sequence_length is not None:
+            requested_max_sequence_length = int(max_sequence_length)
+            if requested_max_sequence_length <= 0:
+                raise ValueError("max_sequence_length must be positive.")
+            if requested_max_sequence_length != self._llm_max_sequence_length:
+                llm_inference = getattr(self, "_llm_inference", None)
+                if llm_inference is not None:
+                    llm_inference.clear()
+            self._llm_max_sequence_length = requested_max_sequence_length
         self._optimize_enabled = bool(optimize)
         if not self._optimize_enabled:
-            self._compiled_models.clear()
+            self._fm_dit_solvers.clear()
+            llm_inference = getattr(self, "_llm_inference", None)
+            if llm_inference is not None:
+                llm_inference.clear()
+            patch_encoder_inference = getattr(self, "_patch_encoder_inference", None)
+            if patch_encoder_inference is not None:
+                patch_encoder_inference.clear()
+            vocoder_inference = getattr(self, "_vocoder_inference", None)
+            if vocoder_inference is not None:
+                vocoder_inference.clear()
 
     def set_cfg_droprate(
         self,
@@ -208,207 +189,39 @@ class DotsTtsModel(nn.Module):
     def _resolve_generate_length_bucket(
         cls,
         max_generate_length: int,
-    ) -> _GenerateLengthBucket:
+    ) -> int:
         requested = int(max_generate_length)
         if requested <= 0:
             raise ValueError("max_generate_length must be positive.")
         for bucket in cls._GENERATE_LENGTH_BUCKETS:
-            if requested <= bucket.size:
+            if requested <= bucket:
                 return bucket
         raise ValueError(
             "max_generate_length exceeds the largest supported compile bucket: "
             f"max_generate_length={requested} "
-            f"max_supported={cls._GENERATE_LENGTH_BUCKETS[-1].size}."
+            f"max_supported={cls._GENERATE_LENGTH_BUCKETS[-1]}."
         )
 
-    @torch.no_grad()
-    def run_warmup(
-        self,
-        *,
-        max_generate_length: int,
-        precision: str = "bfloat16",
-        ode_method: str = "euler",
-        num_steps: int = 10,
-        guidance_scale: float = 1.2,
-    ) -> None:
-        ceiling_bucket = self._resolve_generate_length_bucket(max_generate_length)
-        warmup_buckets = tuple(
-            bucket
-            for bucket in self._GENERATE_LENGTH_BUCKETS
-            if bucket.size <= ceiling_bucket.size
-        )
-        bucket_sizes = [bucket.size for bucket in warmup_buckets]
-        logger.info(
-            "Inference warmup started: requested_max_generate_length={} bucket_sizes={}",
-            int(max_generate_length),
-            bucket_sizes,
-        )
-        for bucket in warmup_buckets:
-            bucket.run_warmup(
-                self,
-                precision=precision,
-                ode_method=ode_method,
-                num_steps=num_steps,
-                guidance_scale=guidance_scale,
-            )
-        logger.info(
-            "Inference warmup completed: requested_max_generate_length={} bucket_sizes={}",
-            int(max_generate_length),
-            bucket_sizes,
-        )
+    def _get_llm_inference(self) -> LLMInference:
+        core_id = id(self.core)
+        adapter = getattr(self, "_llm_inference", None)
+        if adapter is None or getattr(self, "_llm_inference_core_id", None) != core_id:
+            adapter = LLMInference(self.core)
+            self._llm_inference = adapter
+            self._llm_inference_core_id = core_id
+        return adapter
 
-    def _resolve_state_audio_patch_count(self, max_audio_patch_count: int) -> int:
-        requested = int(max_audio_patch_count)
-        if requested <= 0:
-            raise ValueError("max_audio_patch_count must be positive.")
-        if not self._optimize_enabled:
-            return requested
-        return self._resolve_generate_length_bucket(requested).size
-
-    def _warmup_fm_bucket(
-        self,
-        *,
-        max_audio_patch_count: int,
-        precision: str,
-        ode_method: str,
-        num_steps: int,
-        guidance_scale: float,
-    ) -> None:
-        dtype = get_dtype(precision)
-        device = next(self.core.parameters()).device
-        use_amp = device.type == "cuda" and dtype in {torch.float16, torch.bfloat16}
-        with torch.autocast(device_type=device.type, dtype=dtype, enabled=use_amp):
-            state = self._allocate_generate_state(
-                max_audio_patch_count=max_audio_patch_count,
-                device=device,
-                dtype=dtype,
-            )
-            state.fm_seq_len = state.fm_capacity
-            self._decode_next_audio(
-                state,
-                device=device,
-                g_cond=None,
-                ode_method=ode_method,
-                num_steps=num_steps,
-                guidance_scale=guidance_scale,
-            )
-
-    def _warmup_patch_encoder_bucket(
-        self,
-        *,
-        max_audio_patch_count: int,
-        precision: str,
-    ) -> None:
-        dtype = get_dtype(precision)
-        device = next(self.core.parameters()).device
-        state_dtype = dtype if device.type == "cuda" else torch.float32
-        use_amp = device.type == "cuda" and dtype in {torch.float16, torch.bfloat16}
-        with torch.autocast(device_type=device.type, dtype=dtype, enabled=use_amp):
-            state_audio_patch_count = self._resolve_state_audio_patch_count(
-                max_audio_patch_count
-            )
-            patch_encoder_state = self.core.patch_encoder.init_decode_state(
-                max_audio_patch_count=state_audio_patch_count,
-                batch_size=1,
-                device=device,
-                dtype=state_dtype,
-            )
-            audio_patch = torch.zeros(
-                (
-                    1,
-                    self.core.patch_encoder.patch_size,
-                    self.core.latent_dim,
-                ),
-                dtype=state_dtype,
-                device=device,
-            )
-            audio_patch = self.core.io_helper.denormalize(audio_patch)
-            patch_encoder_decode = self._get_compiled_model(
-                "patch_encoder.decode_patch",
-                self.core.patch_encoder.decode_patch,
-                signature=self._patch_encoder_compile_signature(patch_encoder_state),
-            )
-            positions = torch.arange(
-                self.core.patch_encoder.out_ds_rate,
-                device=device,
-                dtype=torch.long,
-            )
-            with measure_inference("patch_encoder"):
-                patch_encoder_decode(
-                    audio_patch,
-                    patch_encoder_state.conv_tail,
-                    patch_encoder_state.layer_caches,
-                    positions,
-                )
-
-    def _compile_callable(
-        self,
-        key: str,
-        model: Callable[..., Any],
-        *,
-        signature: tuple[Any, ...] | None = None,
-    ) -> Callable[..., Any]:
-        compile_target = key.split(".", maxsplit=1)[0]
-        cache_key = (key, signature)
-        compiled = self._compiled_models.get(cache_key)
-        if compiled is None:
-            mode = (
-                "default"
-                if key == "patch_encoder.decode_patch"
-                else "reduce-overhead"
-            )
-            compiled = torch.compile(
-                model,
-                mode=mode,
-                fullgraph=True,
-                dynamic=False,
-            )
-            self._compiled_models[cache_key] = compiled
-            logger.info(
-                "Compiled inference target: key={} target={} signature={}",
-                key,
-                compile_target,
-                signature,
-            )
-        return compiled
-
-    def _get_compiled_model(
-        self,
-        key: str,
-        model: Callable[..., Any],
-        *,
-        signature: tuple[Any, ...] | None = None,
-    ) -> Callable[..., Any]:
-        compile_target = key.split(".", maxsplit=1)[0]
-        if not self._optimize_enabled or compile_target not in self._COMPILE_TARGETS:
-            return model
-        return self._compile_callable(
-            key,
-            model,
-            signature=signature,
-        )
-
-    def _get_compiled_method(
-        self,
-        key: str,
-        owner: Any,
-        method_name: str,
-        *,
-        signature: tuple[Any, ...] | None = None,
-    ) -> Callable[..., Any]:
-        bound_method = getattr(owner, method_name)
-        compile_target = key.split(".", maxsplit=1)[0]
-        if not self._optimize_enabled or compile_target not in self._COMPILE_TARGETS:
-            return bound_method
-
-        raw_method = getattr(type(owner), method_name)
-        raw_callable = getattr(raw_method, "__wrapped__", raw_method)
-        compiled = self._compile_callable(
-            key,
-            raw_callable,
-            signature=signature,
-        )
-        return partial(compiled, owner)
+    def _get_vocoder_inference(self) -> VocoderInference:
+        vocoder_id = id(self.vocoder)
+        adapter = getattr(self, "_vocoder_inference", None)
+        if (
+            adapter is None
+            or getattr(self, "_vocoder_inference_vocoder_id", None) != vocoder_id
+        ):
+            adapter = VocoderInference(self.vocoder)
+            self._vocoder_inference = adapter
+            self._vocoder_inference_vocoder_id = vocoder_id
+        return adapter
 
     def _allocate_generate_state(
         self,
@@ -418,8 +231,13 @@ class DotsTtsModel(nn.Module):
         dtype: torch.dtype,
     ) -> _GenerateState:
         state_dtype = dtype if device.type == "cuda" else torch.float32
-        state_audio_patch_count = self._resolve_state_audio_patch_count(
-            max_audio_patch_count
+        requested_audio_patch_count = int(max_audio_patch_count)
+        if requested_audio_patch_count <= 0:
+            raise ValueError("max_audio_patch_count must be positive.")
+        state_audio_patch_count = (
+            self._resolve_generate_length_bucket(requested_audio_patch_count)
+            if self._optimize_enabled
+            else requested_audio_patch_count
         )
         fm_capacity = state_audio_patch_count * (
             self.core.hidden_patch_size + self.core.latent_patch_size
@@ -453,17 +271,16 @@ class DotsTtsModel(nn.Module):
             workspace["fm_sequence"].zero_()
             workspace["fm_cfg_sequence"].zero_()
 
-        patch_encoder_state = None
-        if not self._optimize_enabled:
-            patch_encoder_state = self.core.patch_encoder.init_decode_state(
-                max_audio_patch_count=state_audio_patch_count,
-                batch_size=1,
-                device=device,
-                dtype=state_dtype,
-            )
+        llm_state = self._get_llm_inference().init_state(
+            optimize=self._optimize_enabled,
+            max_sequence_length=self._llm_max_sequence_length,
+            device=device,
+            dtype=self.core.llm.get_input_embeddings().weight.dtype,
+        )
 
         return _GenerateState(
-            patch_encoder_state=patch_encoder_state,
+            llm_state=llm_state,
+            patch_encoder_state=None,
             fm_seq_len=0,
             fm_capacity=fm_capacity,
             fm_sequence=workspace["fm_sequence"],
@@ -644,8 +461,8 @@ class DotsTtsModel(nn.Module):
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path: str | Path):
-        logger.info(
-            "DotsTtsModel load started: pretrained_path={}",
+        logger.debug(
+            logc("model", "DotsTtsModel load started: pretrained_path={}"),
             pretrained_model_name_or_path,
         )
         pretrained_model_name_or_path = cls._validate_pretrained_directory(
@@ -655,8 +472,11 @@ class DotsTtsModel(nn.Module):
         llm_config = cls._load_llm_config(
             pretrained_model_name_or_path / cls.LLM_CONFIG_FILENAME
         )
-        logger.info(
-            "DotsTtsModel config loaded: pretrained_path={} sample_rate={} patch_size={}",
+        logger.debug(
+            logc(
+                "model",
+                "DotsTtsModel config loaded: pretrained_path={} sample_rate={} patch_size={}",
+            ),
             pretrained_model_name_or_path,
             config.vocoder.sample_rate,
             config.patch_size,
@@ -673,7 +493,7 @@ class DotsTtsModel(nn.Module):
         )
         model._load_pretrained_artifacts(pretrained_model_name_or_path)
         logger.info(
-            "DotsTtsModel load completed: pretrained_path={}",
+            logc("model", "DotsTtsModel load completed: pretrained_path={}"),
             pretrained_model_name_or_path,
         )
         return model.eval()
@@ -902,6 +722,59 @@ class DotsTtsModel(nn.Module):
         )
     # endregion Training loss assembly and forward
 
+    # region Inference helpers
+    def _get_patch_encoder_inference(self) -> SemanticEncoderInference:
+        encoder = self.core.patch_encoder
+        encoder_id = id(encoder)
+        adapter = getattr(self, "_patch_encoder_inference", None)
+        if (
+            adapter is None
+            or getattr(self, "_patch_encoder_inference_encoder_id", None) != encoder_id
+        ):
+            adapter = SemanticEncoderInference(encoder)
+            self._patch_encoder_inference = adapter
+            self._patch_encoder_inference_encoder_id = encoder_id
+        return adapter
+
+    def _get_llm_inference(self) -> LLMInference:
+        core_id = id(self.core)
+        adapter = getattr(self, "_llm_inference", None)
+        if adapter is None or getattr(self, "_llm_inference_core_id", None) != core_id:
+            adapter = LLMInference(self.core)
+            self._llm_inference = adapter
+            self._llm_inference_core_id = core_id
+        return adapter
+
+    def _get_dit_solver(self, *, meanflow: bool) -> DiTSolver:
+        key = (
+            "meanflow" if meanflow else "flow_matching",
+            bool(self._optimize_enabled),
+        )
+        solver = self._fm_dit_solvers.get(key)
+        if solver is None:
+            solver = DiTSolver(
+                DiTInferenceContext.from_core(self.core),
+                optimize=self._optimize_enabled,
+                bucket_resolver=self._resolve_generate_length_bucket,
+                meanflow=meanflow,
+            )
+            self._fm_dit_solvers[key] = solver
+        return solver
+
+    def _get_vocoder_inference(self) -> VocoderInference:
+        vocoder_id = id(self.vocoder)
+        adapter = getattr(self, "_vocoder_inference", None)
+        if (
+            adapter is None
+            or getattr(self, "_vocoder_inference_vocoder_id", None) != vocoder_id
+        ):
+            adapter = VocoderInference(self.vocoder)
+            self._vocoder_inference = adapter
+            self._vocoder_inference_vocoder_id = vocoder_id
+        return adapter
+
+    # endregion Inference helpers
+
     # region Prompt conditioning and decode state helpers
     def _prepare_prompt_audio_for_conditioning(
         self,
@@ -969,7 +842,12 @@ class DotsTtsModel(nn.Module):
         speaker_scale: float = 1.5,
     ) -> _PromptConditioning:
         if prompt_audio is None:
-            logger.info("Prompt conditioning skipped: no prompt audio provided.")
+            logger.debug(
+                logc(
+                    "conditioning",
+                    "Prompt conditioning skipped: no prompt audio provided.",
+                )
+            )
             return _PromptConditioning()
 
         self.vocoder.eval()
@@ -989,25 +867,27 @@ class DotsTtsModel(nn.Module):
             cache_entry.speaker_embedding if can_cache_speaker else None
         )
         if speaker_embedding is None:
-            speaker_encoder = self._get_compiled_model(
-                "speaker_encoder",
-                self.xvector_extractor,
-            )
-            with measure_inference("speaker_encoder"):
-                speaker_embedding = speaker_encoder(prompt_audio[None, :])
+            with measure_inference("speaker_encoder", phase="prompt_conditioning"):
+                speaker_embedding = self.xvector_extractor(prompt_audio[None, :])
             if can_cache_speaker:
                 cache_entry.speaker_embedding = speaker_embedding.detach()
         else:
-            logger.info(
-                "Prompt speaker cache hit: key={} prompt_samples={}",
+            logger.debug(
+                logc(
+                    "conditioning",
+                    "Prompt speaker cache hit: key={} prompt_samples={}",
+                ),
                 cache_key[:12],
                 prompt_sample_count,
             )
         g_cond = self.core.xvec_proj(speaker_embedding * float(speaker_scale))
         if not use_prompt_prefill:
             self._store_prompt_feature_cache_entry(cache_key, cache_entry)
-            logger.info(
-                "Reference-audio-only conditioning prepared: prompt_samples={} speaker_scale={} device={}",
+            logger.debug(
+                logc(
+                    "conditioning",
+                    "Reference-audio-only conditioning prepared: prompt_samples={} speaker_scale={} device={}",
+                ),
                 prompt_sample_count,
                 speaker_scale,
                 device,
@@ -1016,16 +896,17 @@ class DotsTtsModel(nn.Module):
 
         prompt_latents = cache_entry.prompt_latent_distribution
         if prompt_latents is None:
-            latent_encoder = self._get_compiled_model(
-                "latent_encoder",
-                self.vocoder.extract_latents,
-            )
-            with measure_inference("latent_encoder"):
-                prompt_latents = latent_encoder(prompt_audio[None, :])
+            with measure_inference("latent_encoder", phase="prompt_conditioning"):
+                prompt_latents = self._get_vocoder_inference().extract_latents(
+                    prompt_audio[None, :]
+                )
             cache_entry.prompt_latent_distribution = prompt_latents.detach()
         else:
-            logger.info(
-                "Prompt latent cache hit: key={} prompt_samples={}",
+            logger.debug(
+                logc(
+                    "conditioning",
+                    "Prompt latent cache hit: key={} prompt_samples={}",
+                ),
                 cache_key[:12],
                 prompt_sample_count,
             )
@@ -1037,9 +918,12 @@ class DotsTtsModel(nn.Module):
             "b (s p) d -> b s p d",
             p=self.config.patch_size,
         )
-        logger.info(
-            "Prompt conditioning prepared: prompt_samples={} prompt_patch_count={} "
-            "speaker_scale={} device={}",
+        logger.debug(
+            logc(
+                "conditioning",
+                "Prompt conditioning prepared: prompt_samples={} prompt_patch_count={} "
+                "speaker_scale={} device={}",
+            ),
             prompt_sample_count,
             prompt_patches.size(1),
             speaker_scale,
@@ -1051,70 +935,21 @@ class DotsTtsModel(nn.Module):
             g_cond=g_cond,
         )
 
-    @staticmethod
-    def _patch_encoder_compile_signature(
-        patch_encoder_state: Any,
-    ) -> tuple[int, torch.dtype]:
-        key_cache, _ = patch_encoder_state.layer_caches[0]
-        return int(key_cache.size(2)), key_cache.dtype
-
-    def _resolve_patch_encoder_audio_bucket(self, required_seq_len: int) -> int:
-        requested = int(required_seq_len)
-        if requested <= 0:
-            raise ValueError("required_seq_len must be positive.")
-        requested_patch_count = math.ceil(
-            requested / self.core.patch_encoder.out_ds_rate
-        )
-        if not self._optimize_enabled:
-            return requested_patch_count
-        return self._resolve_generate_length_bucket(requested_patch_count).size
-
-    def _copy_patch_encoder_state(self, source: Any, target: Any) -> None:
-        seq_len = source.seq_len
-        target_capacity = int(target.layer_caches[0][0].size(2))
-        if seq_len > target_capacity:
-            raise ValueError(
-                "Patch encoder state copy exceeds target capacity: "
-                f"seq_len={seq_len} capacity={target_capacity}."
-            )
-
-        target.conv_tail.copy_(source.conv_tail)
-        target.seq_len = seq_len
-        for (source_key, source_value), (target_key, target_value) in zip(
-            source.layer_caches,
-            target.layer_caches,
-            strict=True,
-        ):
-            if seq_len > 0:
-                target_key[:, :, :seq_len, :].copy_(source_key[:, :, :seq_len, :])
-                target_value[:, :, :seq_len, :].copy_(source_value[:, :, :seq_len, :])
-
-    def _ensure_patch_encoder_state_capacity(
+    def _prepare_patch_encoder_input(
         self,
-        state: _GenerateState,
+        latents: torch.Tensor,
         *,
-        required_seq_len: int,
-        device: torch.device,
-        dtype: torch.dtype,
-    ) -> None:
-        current_state = state.patch_encoder_state
-        if current_state is not None:
-            current_capacity = int(current_state.layer_caches[0][0].size(2))
-            if current_capacity >= required_seq_len:
-                return
-
-        target_audio_patch_count = self._resolve_patch_encoder_audio_bucket(
-            required_seq_len
+        already_normalized: bool = False,
+    ) -> torch.Tensor:
+        if self.core.patch_encoder.expects_normalized_input:
+            return (
+                latents
+                if already_normalized
+                else self.core.io_helper.normalize(latents)
+            )
+        return (
+            self.core.io_helper.denormalize(latents) if already_normalized else latents
         )
-        next_state = self.core.patch_encoder.init_decode_state(
-            max_audio_patch_count=target_audio_patch_count,
-            batch_size=1,
-            device=device,
-            dtype=dtype,
-        )
-        if current_state is not None:
-            self._copy_patch_encoder_state(current_state, next_state)
-        state.patch_encoder_state = next_state
 
     def _prefill_prompt_latents(
         self,
@@ -1128,164 +963,23 @@ class DotsTtsModel(nn.Module):
             return prompt_latents.new_zeros(
                 (prompt_latents.size(0), 0, self.core.llm_hidden_size)
             )
-        self._ensure_patch_encoder_state_capacity(
-            state,
-            required_seq_len=(
-                (prompt_latents.size(1) // self.core.patch_encoder.patch_size)
-                * self.core.patch_encoder.out_ds_rate
-            ),
-            device=prompt_latents.device,
-            dtype=(
-                state.fm_sequence.dtype
-                if state.fm_sequence is not None
-                else prompt_latents.dtype
-            ),
+        patch_encoder_input = self._prepare_patch_encoder_input(prompt_latents)
+        state_dtype = (
+            state.fm_sequence.dtype
+            if state.fm_sequence is not None
+            else patch_encoder_input.dtype
         )
-        with measure_inference("patch_encoder"):
+        with measure_inference("patch_encoder", phase="prompt_prefill"):
             prompt_patch_embeddings, state.patch_encoder_state = (
-                self.core.patch_encoder.prefill(
-                    prompt_latents,
+                self._get_patch_encoder_inference().prefill_with_state(
+                    patch_encoder_input,
                     state.patch_encoder_state,
+                    optimize=self._optimize_enabled,
+                    bucket_resolver=self._resolve_generate_length_bucket,
+                    dtype=state_dtype,
                 )
             )
         return prompt_patch_embeddings
-
-    def _get_fm_decode_workspace(
-        self,
-        *,
-        total_len: int,
-        device: torch.device,
-        dtype: torch.dtype,
-    ) -> dict[str, torch.Tensor]:
-        workspace_key = (total_len, str(device), dtype)
-        workspace = self._fm_decode_workspaces.get(workspace_key)
-        if workspace is None:
-            workspace = {
-                "input_sequence": torch.zeros(
-                    (1, total_len, self.core.fm_hidden_size),
-                    dtype=dtype,
-                    device=device,
-                ),
-                "cfg_sequence": torch.zeros(
-                    (1, total_len, self.core.fm_hidden_size),
-                    dtype=dtype,
-                    device=device,
-                ),
-                "attn_mask": torch.zeros(
-                    (1, total_len, total_len),
-                    dtype=torch.bool,
-                    device=device,
-                ),
-                "pos_ids": torch.zeros(
-                    (1, total_len),
-                    dtype=torch.float32,
-                    device=device,
-                ),
-            }
-            self._fm_decode_workspaces[workspace_key] = workspace
-        else:
-            workspace["input_sequence"].zero_()
-            workspace["cfg_sequence"].zero_()
-        return workspace
-
-    def _resolve_fm_history_bucket_capacity(self, fm_seq_len: int) -> int:
-        requested = int(fm_seq_len)
-        if requested <= 0:
-            raise ValueError("fm_seq_len must be positive.")
-        if not self._optimize_enabled:
-            return requested
-        history_stride = self.core.hidden_patch_size + self.core.latent_patch_size
-        requested_patch_count = math.ceil(requested / history_stride)
-        return self._resolve_generate_length_bucket(
-            requested_patch_count
-        ).size * history_stride
-
-    def _build_fm_attn_mask(
-        self,
-        *,
-        state: _GenerateState,
-        attn_mask: torch.Tensor,
-    ) -> torch.Tensor:
-        if state.fm_seq_len <= 0:
-            raise RuntimeError("FM sequence length must be positive before decode.")
-        hidden_patch_size = self.core.hidden_patch_size
-        latent_start = attn_mask.size(-1) - self.core.latent_patch_size
-        attn_mask.zero_()
-        block_start = state.fm_seq_len - hidden_patch_size
-        if block_start > 0:
-            causal_mask = torch.ones(
-                (block_start, block_start),
-                device=attn_mask.device,
-                dtype=torch.bool,
-            ).triu(1).logical_not()
-            attn_mask[:, :block_start, :block_start] = causal_mask
-
-        attn_mask[:, block_start : state.fm_seq_len, : state.fm_seq_len] = True
-        attn_mask[:, block_start : state.fm_seq_len, latent_start:] = True
-        attn_mask[:, latent_start:, : state.fm_seq_len] = True
-        attn_mask[:, latent_start:, latent_start:] = True
-        if latent_start > state.fm_seq_len:
-            padding_indices = torch.arange(
-                state.fm_seq_len,
-                latent_start,
-                device=attn_mask.device,
-            )
-            attn_mask[:, padding_indices, padding_indices] = True
-        return attn_mask
-
-    def _build_fm_pos_ids(
-        self,
-        *,
-        state: _GenerateState,
-        pos_ids: torch.Tensor,
-    ) -> torch.Tensor:
-        if state.fm_seq_len <= 0:
-            raise RuntimeError("FM sequence length must be positive before decode.")
-        pos_ids.zero_()
-        latent_start = pos_ids.size(-1) - self.core.latent_patch_size
-        pos_ids[:, : state.fm_seq_len] = torch.arange(
-            state.fm_seq_len,
-            device=pos_ids.device,
-            dtype=pos_ids.dtype,
-        )
-        pos_ids[:, latent_start:] = torch.arange(
-            state.fm_seq_len,
-            state.fm_seq_len + self.core.latent_patch_size,
-            device=pos_ids.device,
-            dtype=pos_ids.dtype,
-        )
-        return pos_ids
-
-    def _prepare_fm_decode_inputs(
-        self,
-        state: _GenerateState,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int]:
-        sequence = state.fm_sequence
-        cfg_sequence = state.fm_cfg_sequence
-        if sequence is None or cfg_sequence is None:
-            raise RuntimeError("FM static buffers are not initialized.")
-        history_bucket_capacity = self._resolve_fm_history_bucket_capacity(
-            state.fm_seq_len
-        )
-        total_len = history_bucket_capacity + self.core.latent_patch_size
-        workspace = self._get_fm_decode_workspace(
-            total_len=total_len,
-            device=sequence.device,
-            dtype=sequence.dtype,
-        )
-        workspace["input_sequence"][:, : state.fm_seq_len].copy_(
-            sequence[:, : state.fm_seq_len]
-        )
-        workspace["cfg_sequence"][:, : state.fm_seq_len].copy_(
-            cfg_sequence[:, : state.fm_seq_len]
-        )
-        return (
-            workspace["input_sequence"],
-            workspace["cfg_sequence"],
-            workspace["attn_mask"],
-            workspace["pos_ids"],
-            history_bucket_capacity,
-        )
 
     def _append_to_fm_buffer(
         self,
@@ -1344,12 +1038,17 @@ class DotsTtsModel(nn.Module):
         position: int,
         next_audio_position: int,
         state: _GenerateState,
+        profile_step: int | None = None,
     ) -> int:
-        with measure_inference("LLM"):
+        with measure_inference("LLM", phase="text_schedule", step=profile_step):
             text_chunk = generation_schedule[:, position:next_audio_position]
-            _, state.llm_hiddens, _, state.llm_cache = self.core.step_llm(
+            _, state.llm_hiddens, _logits = self._get_llm_inference().step(
+                state.llm_state,
                 input_ids=text_chunk,
-                past_key_values=state.llm_cache,
+                request_logits=False,
+                compile_static=True,
+                optimize=self._optimize_enabled,
+                max_sequence_length=self._llm_max_sequence_length,
             )
         self._append_hidden_chunk(state, state.llm_hiddens)
         return next_audio_position
@@ -1395,7 +1094,9 @@ class DotsTtsModel(nn.Module):
         next_position = position + 1
         if next_position >= generation_schedule.size(1):
             return False
-        return int(generation_schedule[0, next_position].item()) in audio_placeholder_ids
+        return (
+            int(generation_schedule[0, next_position].item()) in audio_placeholder_ids
+        )
 
     def _build_prefill_inputs_embeds(
         self,
@@ -1446,10 +1147,13 @@ class DotsTtsModel(nn.Module):
             prompt_patch_embeddings=prompt_patch_embeddings,
             prompt_span_positions=prompt_span_positions,
         )
-        with measure_inference("LLM"):
-            _, llm_hiddens, _, state.llm_cache = self.core.step_llm(
+        with measure_inference("LLM", phase="prefill"):
+            _, llm_hiddens, _logits = self._get_llm_inference().step(
+                state.llm_state,
                 inputs_embeds=inputs_embeds,
-                past_key_values=state.llm_cache,
+                request_logits=False,
+                optimize=self._optimize_enabled,
+                max_sequence_length=self._llm_max_sequence_length,
             )
         state.llm_hiddens = llm_hiddens[:, -1:, :]
 
@@ -1479,130 +1183,71 @@ class DotsTtsModel(nn.Module):
         self,
         state: _GenerateState,
         *,
-        device: torch.device,
         g_cond: torch.Tensor | None,
         ode_method: str,
         num_steps: int,
         guidance_scale: float,
+        profile_step: int | None = None,
     ) -> torch.Tensor:
-        if state.fm_seq_len <= 0:
-            raise RuntimeError(
-                "Cannot decode audio before any conditioning state has been prefetched."
-            )
-        if state.fm_sequence is None or state.fm_cfg_sequence is None:
-            raise RuntimeError("FM static buffers are not initialized.")
-        if state.fm_null_g_cond is None:
-            raise RuntimeError("FM null conditioning buffer is not initialized.")
-        fm_sequence, fm_cfg_sequence, fm_attn_mask, fm_pos_ids, history_bucket_capacity = (
-            self._prepare_fm_decode_inputs(state)
-        )
-        compile_signature = (
-            (history_bucket_capacity, state.fm_sequence.dtype)
-            if self._optimize_enabled
-            else (state.fm_seq_len, state.fm_sequence.dtype)
-        )
-        if g_cond is None:
-            g_cond = state.fm_null_g_cond
-        else:
-            g_cond = g_cond.to(
-                device=state.fm_null_g_cond.device,
-                dtype=state.fm_null_g_cond.dtype,
-            )
-        with measure_inference("FM"):
-            attn_mask = self._build_fm_attn_mask(
-                state=state,
-                attn_mask=fm_attn_mask,
-            )
-            pos_ids = self._build_fm_pos_ids(
-                state=state,
-                pos_ids=fm_pos_ids,
-            )
-            if self.core.mode == "meanflow":
-                fm_solver_step = self._get_compiled_method(
-                    "FM.meanflow.solver_step",
-                    self.core,
-                    "meanflow_solver_step",
-                    signature=compile_signature,
-                )
-                return self.core._meanflow_step_fm(
-                    input_sequence=fm_sequence,
-                    attn_mask=attn_mask,
-                    pos_ids=pos_ids,
-                    patch_size=self.core.latent_patch_size,
-                    g_cond=g_cond,
-                    nfe=num_steps,
-                    solver_step=fm_solver_step,
-                )
-
-            fm_solver_step = self._get_compiled_method(
-                "FM.flow_matching.solver_step",
-                self.core,
-                "fm_solver_step",
-                signature=compile_signature,
-            )
-            return self.core._flow_matching_step_fm(
-                input_sequence=fm_sequence,
-                cfg_sequence=fm_cfg_sequence,
-                attn_mask=attn_mask,
-                pos_ids=pos_ids,
-                hidden_size=self.core.hidden_patch_size,
-                patch_size=self.core.latent_patch_size,
+        with measure_inference("FM", phase="decode", step=profile_step):
+            sequence = state.fm_sequence
+            if sequence is None:
+                raise RuntimeError("FM static buffer is not initialized.")
+            null_g_cond = state.fm_null_g_cond
+            if null_g_cond is None:
+                raise RuntimeError("FM null conditioning buffer is not initialized.")
+            meanflow = self.core.mode == "meanflow"
+            cfg_sequence = state.fm_cfg_sequence
+            if not meanflow and cfg_sequence is None:
+                raise RuntimeError("FM cfg static buffer is not initialized.")
+            audio_patch = self._get_dit_solver(meanflow=meanflow).decode_next(
+                state.fm_dit_state,
+                sequence=sequence,
+                cfg_sequence=cfg_sequence,
+                fm_seq_len=state.fm_seq_len,
+                null_g_cond=null_g_cond,
                 g_cond=g_cond,
+                nfe=num_steps,
                 ode_method=ode_method,
-                num_steps=num_steps,
                 guidance_scale=guidance_scale,
-                solver_step=fm_solver_step,
             )
+            return audio_patch
 
     def _consume_audio_patch(
         self,
         state: _GenerateState,
         *,
         audio_patch: torch.Tensor,
+        profile_step: int | None = None,
     ) -> None:
-        audio_patch_for_llm = self.core.io_helper.denormalize(audio_patch)
+        audio_patch_for_llm = self._prepare_patch_encoder_input(
+            audio_patch,
+            already_normalized=True,
+        )
         self._append_history_chunk(state, audio_patch)
-        current_seq_len = (
-            0
-            if state.patch_encoder_state is None
-            else state.patch_encoder_state.seq_len
+        state_dtype = (
+            state.fm_sequence.dtype
+            if state.fm_sequence is not None
+            else audio_patch_for_llm.dtype
         )
-        self._ensure_patch_encoder_state_capacity(
-            state,
-            required_seq_len=current_seq_len + self.core.patch_encoder.out_ds_rate,
-            device=audio_patch_for_llm.device,
-            dtype=(
-                state.fm_sequence.dtype
-                if state.fm_sequence is not None
-                else audio_patch_for_llm.dtype
-            ),
-        )
-        patch_encoder_decode = self._get_compiled_model(
-            "patch_encoder.decode_patch",
-            self.core.patch_encoder.decode_patch,
-            signature=self._patch_encoder_compile_signature(state.patch_encoder_state),
-        )
-        patch_positions = (
-            torch.arange(
-                self.core.patch_encoder.out_ds_rate,
-                device=audio_patch_for_llm.device,
-                dtype=torch.long,
+        with measure_inference("patch_encoder", phase="decode", step=profile_step):
+            llm_embedding, state.patch_encoder_state = (
+                self._get_patch_encoder_inference().decode_patch_with_state(
+                    audio_patch_for_llm,
+                    state.patch_encoder_state,
+                    optimize=self._optimize_enabled,
+                    bucket_resolver=self._resolve_generate_length_bucket,
+                    dtype=state_dtype,
+                )
             )
-            + state.patch_encoder_state.seq_len
-        )
-        with measure_inference("patch_encoder"):
-            llm_embedding, conv_tail = patch_encoder_decode(
-                audio_patch_for_llm,
-                state.patch_encoder_state.conv_tail,
-                state.patch_encoder_state.layer_caches,
-                patch_positions,
-            )
-        state.patch_encoder_state.conv_tail.copy_(conv_tail)
-        state.patch_encoder_state.seq_len += self.core.patch_encoder.out_ds_rate
-        with measure_inference("LLM"):
-            _, state.llm_hiddens, _, state.llm_cache = self.core.step_llm(
+        with measure_inference("LLM", phase="decode", step=profile_step):
+            _, state.llm_hiddens, _logits = self._get_llm_inference().step(
+                state.llm_state,
                 inputs_embeds=llm_embedding,
-                past_key_values=state.llm_cache,
+                request_logits=False,
+                compile_static=True,
+                optimize=self._optimize_enabled,
+                max_sequence_length=self._llm_max_sequence_length,
             )
 
     def _decode(
@@ -1613,12 +1258,12 @@ class DotsTtsModel(nn.Module):
         state: _GenerateState,
         audio_placeholder_ids: set[int],
         span_positions: torch.Tensor,
-        device: torch.device,
         g_cond: torch.Tensor | None,
         ode_method: str,
         num_steps: int,
         guidance_scale: float,
         eos_threshold: float,
+        suppress_first_eos_check: bool = False,
     ) -> Iterator[torch.Tensor]:
         span_cursor = torch.searchsorted(
             span_positions,
@@ -1628,25 +1273,36 @@ class DotsTtsModel(nn.Module):
                 dtype=span_positions.dtype,
             ),
         ).item()
+        decoded_audio_count = 0
         while position < generation_schedule.size(1):
             token_id = int(generation_schedule[0, position].item())
             if token_id in audio_placeholder_ids:
-                stop_after_current_audio = self._should_stop_after_current_audio(
-                    state,
-                    eos_threshold=eos_threshold,
+                profile_step = decoded_audio_count + 1
+                should_check_eos = not (
+                    suppress_first_eos_check and decoded_audio_count == 0
+                )
+                stop_after_current_audio = (
+                    self._should_stop_after_current_audio(
+                        state,
+                        eos_threshold=eos_threshold,
+                    )
+                    if should_check_eos
+                    else False
                 )
                 audio_patch = self._decode_next_audio(
                     state,
-                    device=device,
                     g_cond=g_cond,
                     ode_method=ode_method,
                     num_steps=num_steps,
                     guidance_scale=guidance_scale,
+                    profile_step=profile_step,
                 )
                 self._consume_audio_patch(
                     state,
                     audio_patch=audio_patch,
+                    profile_step=profile_step,
                 )
+                decoded_audio_count += 1
                 if self._next_token_is_audio_span(
                     generation_schedule,
                     position=position,
@@ -1670,6 +1326,7 @@ class DotsTtsModel(nn.Module):
                 position=position,
                 next_audio_position=next_audio_position,
                 state=state,
+                profile_step=decoded_audio_count + 1,
             )
 
     def _should_stop_after_current_audio(
@@ -1707,6 +1364,16 @@ class DotsTtsModel(nn.Module):
                 raise ValueError(
                     "DotsTtsModel.generate expects batch size 1 for generation_schedule."
                 )
+            if self._optimize_enabled:
+                max_sequence_length = int(self._llm_max_sequence_length)
+                schedule_length = int(generation_schedule.size(1))
+                if schedule_length > max_sequence_length:
+                    raise ValueError(
+                        "generation_schedule length exceeds max_sequence_length for "
+                        "optimized LLM StaticCache inference: "
+                        f"schedule_length={schedule_length} "
+                        f"max_sequence_length={max_sequence_length}."
+                    )
 
             use_prompt_prefill = data.get("prompt_audio") is not None and bool(
                 data.get("prompt_text")
@@ -1734,9 +1401,12 @@ class DotsTtsModel(nn.Module):
                     f"generation_schedule provides {span_count} audio spans, but prompt prefill requires "
                     f"{prompt_patch_count} spans and generation requires at least one additional decode span."
                 )
-            logger.info(
-                "Latent generation prepared: schedule_audio_spans={} prompt_patch_count={} "
-                "minimum_required_spans={}",
+            logger.debug(
+                logc(
+                    "decode",
+                    "Latent generation prepared: schedule_audio_spans={} prompt_patch_count={} "
+                    "minimum_required_spans={}",
+                ),
                 span_count,
                 prompt_patch_count,
                 minimum_required_spans,
@@ -1768,20 +1438,23 @@ class DotsTtsModel(nn.Module):
                 state=state,
                 audio_placeholder_ids=audio_placeholder_ids,
                 span_positions=span_positions,
-                device=device,
                 g_cond=prompt_conditioning.g_cond,
                 ode_method=ode_method,
                 num_steps=num_steps,
                 guidance_scale=guidance_scale,
                 eos_threshold=eos_threshold,
+                suppress_first_eos_check=has_prompt_prefill,
             ):
                 if should_drop_regenerated_prompt_patch:
                     should_drop_regenerated_prompt_patch = False
                     continue
                 payload_patch_count += 1
                 if payload_patch_count == 1 or payload_patch_count % 10 == 0:
-                    logger.info(
-                        "Latent generation progress: payload_audio_patches={}",
+                    logger.debug(
+                        logc(
+                            "decode",
+                            "Latent generation progress: payload_audio_patches={}",
+                        ),
                         payload_patch_count,
                     )
                 yield self.core.io_helper.denormalize(audio_patch)
@@ -1798,73 +1471,10 @@ class DotsTtsModel(nn.Module):
                     "This usually means EOS triggered before the first decode patch "
                     "or the generation schedule did not provide an effective decode span."
                 )
-            logger.info(
-                "Latent generation completed: payload_audio_patches={}",
+            logger.debug(
+                logc("decode", "Latent generation completed: payload_audio_patches={}"),
                 payload_patch_count,
             )
-
-    @torch.no_grad()
-    def _decode_latents(self, latents: torch.Tensor) -> torch.Tensor:
-        with measure_inference("latent_decoder"):
-            return self.vocoder.inference_from_latents(
-                latents.transpose(1, 2).float(),
-                do_sample=False,
-            )
-
-    @torch.no_grad()
-    def _init_vocoder_stream_state(self) -> Any:
-        return self.vocoder.init_stream_state(
-            batch_size=1,
-            chunk_size=self.core.latent_patch_size,
-        )
-
-    @torch.no_grad()
-    def _stream_vocoder_patch(
-        self,
-        latent_patch: torch.Tensor,
-        *,
-        stream_state: Any,
-    ) -> torch.Tensor:
-        latents = latent_patch.transpose(1, 2)
-        if not self._optimize_enabled:
-            with measure_inference("vocoder"):
-                return self.vocoder.stream_step(latents, stream_state)
-
-        valid_frames = min(
-            stream_state.decoder.total_frames,
-            stream_state.decoder.window.size(-1),
-        )
-        valid_frames_tensor = stream_state.decoder.window.new_tensor(
-            valid_frames,
-            dtype=torch.int64,
-        )
-        vocoder_step = self._get_compiled_method(
-            "vocoder.step",
-            self.vocoder,
-            "compiled_stream_step",
-        )
-        with measure_inference("vocoder"):
-            audio_window, hidden_h, hidden_c, new_window = vocoder_step(
-                latents,
-                stream_state.lstm_hidden[0],
-                stream_state.lstm_hidden[1],
-                stream_state.decoder.window,
-                valid_frames_tensor,
-            )
-        stream_state.lstm_hidden = (hidden_h.clone(), hidden_c.clone())
-        stream_state.decoder.window = new_window.clone()
-        stream_state.decoder.total_frames += int(latents.size(-1))
-        audio_chunk = self.vocoder._slice_stream_audio_window(
-            audio_window,
-            stream_state,
-            final=False,
-        )
-        return audio_chunk.clone()
-
-    @torch.no_grad()
-    def _flush_vocoder_stream(self, stream_state: Any) -> torch.Tensor:
-        with measure_inference("vocoder"):
-            return self.vocoder.stream_flush(stream_state)
 
     @torch.no_grad()
     def generate_audio_stream(
@@ -1877,25 +1487,76 @@ class DotsTtsModel(nn.Module):
         guidance_scale: float,
         speaker_scale: float = 1.5,
         eos_threshold: float = 0.8,
+        vocoder_merge_steps: int = 1,
     ) -> Iterator[torch.Tensor]:
-        stream_state = self._init_vocoder_stream_state()
-        for latent_patch in self._generate_latents_stream(
-            data,
-            precision=precision,
-            ode_method=ode_method,
-            num_steps=num_steps,
-            guidance_scale=guidance_scale,
-            speaker_scale=speaker_scale,
-            eos_threshold=eos_threshold,
+        merge_steps = vocoder_merge_steps if self._optimize_enabled else 1
+        if merge_steps < 1:
+            raise ValueError(
+                f"vocoder_merge_steps must be >= 1, got {vocoder_merge_steps}."
+            )
+        vocoder_inference = self._get_vocoder_inference()
+        stream_state = vocoder_inference.init_stream_state(
+            batch_size=1,
+            chunk_size=int(self.core.latent_patch_size) * merge_steps,
+        )
+        pending_latent_patches: list[torch.Tensor] = []
+        pending_start_index = 0
+
+        for latent_patch_index, latent_patch in enumerate(
+            self._generate_latents_stream(
+                data,
+                precision=precision,
+                ode_method=ode_method,
+                num_steps=num_steps,
+                guidance_scale=guidance_scale,
+                speaker_scale=speaker_scale,
+                eos_threshold=eos_threshold,
+            ),
+            start=1,
         ):
-            audio_chunk = self._stream_vocoder_patch(
-                latent_patch,
+            # Keep the initial cadence unchanged for first-packet latency.
+            if (
+                merge_steps == 1
+                or latent_patch_index <= self.VOCODER_STREAM_INITIAL_UNMERGED_PATCHES
+            ):
+                audio_chunk = vocoder_inference.stream_step(
+                    latent_patch,
+                    stream_state=stream_state,
+                    optimize=self._optimize_enabled,
+                    profile_step=latent_patch_index,
+                    use_compiled=True,
+                )
+            else:
+                if not pending_latent_patches:
+                    pending_start_index = latent_patch_index
+                pending_latent_patches.append(latent_patch)
+                if len(pending_latent_patches) < merge_steps:
+                    continue
+                audio_chunk = vocoder_inference.stream_step(
+                    torch.cat(pending_latent_patches, dim=1),
+                    stream_state=stream_state,
+                    optimize=self._optimize_enabled,
+                    profile_step=f"{pending_start_index}-{latent_patch_index}",
+                    use_compiled=True,
+                )
+                pending_latent_patches = []
+                pending_start_index = 0
+            if audio_chunk.size(-1) > 0:
+                yield audio_chunk
+
+        if pending_latent_patches:
+            final_index = pending_start_index + len(pending_latent_patches) - 1
+            audio_chunk = vocoder_inference.stream_step(
+                torch.cat(pending_latent_patches, dim=1),
                 stream_state=stream_state,
+                optimize=self._optimize_enabled,
+                profile_step=f"{pending_start_index}-{final_index}",
+                use_compiled=False,
             )
             if audio_chunk.size(-1) > 0:
                 yield audio_chunk
 
-        final_chunk = self._flush_vocoder_stream(stream_state)
+        final_chunk = vocoder_inference.flush(stream_state)
         if final_chunk.size(-1) > 0:
             yield final_chunk
 
@@ -1920,14 +1581,19 @@ class DotsTtsModel(nn.Module):
                 speaker_scale=speaker_scale,
             )
         )
-        logger.info(
-            "Vocoder decode started: latent_patch_count={}",
+        logger.debug(
+            logc("vocoder", "Vocoder decode started: latent_patch_count={}"),
             len(latent_patches),
         )
-        audio = self._decode_latents(torch.cat(latent_patches, dim=1))
-        logger.info(
-            "Vocoder decode completed: waveform_samples={}",
+        audio = self._get_vocoder_inference().decode_latents(
+            torch.cat(latent_patches, dim=1)
+        )
+        logger.debug(
+            logc("vocoder", "Vocoder decode completed: waveform_samples={}"),
             audio.shape[-1],
         )
         return audio
+
     # endregion Public generation APIs
+
+
