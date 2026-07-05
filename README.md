@@ -17,7 +17,7 @@ dots.tts achieves the best average performance on **Seed-TTS-Eval**, with WERs o
 
 ### News
 
-* **[2026.07]** 🚀 Shipped a **high-performance streaming inference path** — under `--optimize`, `dots.tts-soar` reaches RTF p50 **0.20 / 0.18** and first-chunk latency **225 ms / 69 ms** (voice cloning / text-only); `dots.tts-mf` reaches **0.15 / 0.13** and **204 ms / 68 ms** respectively. See the [Efficiency](#-efficiency) section for details.
+* **[2026.07]** 🚀 Shipped a **high-performance inference path** — under `--optimize`, `dots.tts-soar` reaches RTF p50 **0.20 / 0.18** and first-chunk latency **225 ms / 69 ms** (voice cloning / text-only); `dots.tts-mf` reaches **0.15 / 0.13** and **204 ms / 68 ms** respectively. See the [Efficiency](#-efficiency) section for details.
 
 * **[2026.06]** 🔥 We have released **dots.tts** — 2B fully continuous AR TTS, with pretrained / self-corrective-aligned / MeanFlow-distilled checkpoints and full inference & fine-tuning code under Apache-2.0.
 
@@ -394,9 +394,9 @@ Win-rate judged head-to-head against `gpt-4o-mini-tts` by Gemini-2.5-Pro-0506 ac
 
 ## ⚡ Efficiency
 
-Streaming-inference benchmarks under `--optimize` on a Seed-TTS-Eval mix (100 utterances across zh / en / zh-hard, first post-warmup request excluded, **N=99 per group**). `voice_cloning` uses reference audio + transcript; `text_only` uses text with no reference. Common config: `precision=bfloat16`, `guidance_scale=1.2`, `seed=42`; SOAR uses `num_steps=10`, MF uses `num_steps=4`.
+Streaming-inference benchmarks under `--optimize` on a Seed-TTS-Eval mix (100 utterances across zh / en / zh-hard, first post-warmup request excluded, N=99 per group). `voice_cloning` uses reference audio + transcript; `text_only` uses text with no reference. Common config: `precision=bfloat16`, `guidance_scale=1.2`, `seed=42`; SOAR uses `num_steps=10`, MF uses `num_steps=4`. Hardware / stack: single H800, torch 2.8 + CUDA 12.8. The `--optimize` path also accelerates non-streaming `generate()` calls; numbers below are the streaming path.
 
-> **Note:** `--optimize` triggers a one-shot `torch.compile` warmup that walks every DiT compile bucket + KvPrefill + vocoder chunk sizes. Cold start takes **~3 minutes** on H100 / A100; every subsequent request runs at the steady-state RTF above. Pass `warmup_on_optimize=False` to `DotsTtsRuntime` if you want to skip warmup and accept the first request paying the compile cost.
+> **Note:** `--optimize` triggers a one-shot `torch.compile` warmup that walks every DiT compile bucket + KvPrefill + vocoder chunk sizes. Cold start takes **~3 minutes** on H800; every subsequent request runs at the steady-state RTF above. Pass `warmup_on_optimize=False` to `DotsTtsRuntime` if you want to skip warmup and accept the first request paying the compile cost.
 
 ### Steady-State Latency
 
