@@ -396,6 +396,8 @@ Win-rate judged head-to-head against `gpt-4o-mini-tts` by Gemini-2.5-Pro-0506 ac
 
 Streaming-inference benchmarks under `--optimize` on a Seed-TTS-Eval mix (100 utterances across zh / en / zh-hard, first post-warmup request excluded, **N=99 per group**). `voice_cloning` uses reference audio + transcript; `text_only` uses text with no reference. Common config: `precision=bfloat16`, `guidance_scale=1.2`, `seed=42`; SOAR uses `num_steps=10`, MF uses `num_steps=4`.
 
+> **Note:** `--optimize` triggers a one-shot `torch.compile` warmup that walks every DiT compile bucket + KvPrefill + vocoder chunk sizes. Cold start takes **~3 minutes** on H100 / A100; every subsequent request runs at the steady-state RTF above. Pass `warmup_on_optimize=False` to `DotsTtsRuntime` if you want to skip warmup and accept the first request paying the compile cost.
+
 ### Steady-State Latency
 
 | Group | audio mean (s) | latency p50 / p90 (s) | first-chunk p50 / p90 (ms) | RTF mean / p50 / p90 | peak alloc (GB) |
