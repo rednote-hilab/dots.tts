@@ -234,6 +234,7 @@ class MultiHeadAttention(nn.Module):
         norm_layer: str = "LayerNorm",
         rotary_bias: bool = False,
         rotary_theta: float | None = 50000,
+        attn_backend: str = "sdpa",
         **_kwargs,
     ):
         super().__init__()
@@ -244,6 +245,9 @@ class MultiHeadAttention(nn.Module):
         self.head_dim = hidden_size // num_heads
         self.scale = self.head_dim**-0.5
         self.rotary_bias = rotary_bias
+        if attn_backend not in {"sdpa", "flex"}:
+            raise ValueError(f"Unsupported attention backend: {attn_backend!r}.")
+        self.attn_backend = attn_backend
 
         self.q_proj = nn.Linear(hidden_size, hidden_size, bias=qkv_bias)
         self.k_proj = nn.Linear(hidden_size, hidden_size, bias=qkv_bias)

@@ -291,6 +291,39 @@ class DotsTtsCore(nn.Module):
     # endregion Training forward path
 
     # region Autoregressive and flow-matching inference steps
+    def _llm_base_model(self) -> nn.Module:
+        base_model = getattr(self.llm, "base_model", None)
+        if base_model is not None and base_model is not self.llm:
+            return base_model
+
+        base_model_prefix = getattr(self.llm, "base_model_prefix", None)
+        if base_model_prefix:
+            prefixed_model = getattr(self.llm, base_model_prefix, None)
+            if prefixed_model is not None and prefixed_model is not self.llm:
+                return prefixed_model
+
+        raise RuntimeError(
+            "Qwen2ForCausalLM did not expose a base transformer model. "
+            "Add an adapter for this architecture before optimized inference."
+        )
+
+    @staticmethod
+    def _last_hidden_state(outputs: Any) -> torch.Tensor | None:
+        hidden = getattr(outputs, "last_hidden_state", None)
+        if hidden is not None:
+            return hidden
+        if isinstance(outputs, tuple) and outputs:
+            first = outputs[0]
+            if isinstance(first, torch.Tensor):
+                return first
+        return None
+
+    def _compute_lm_logits(self, hidden: torch.Tensor) -> torch.Tensor:
+        output_embeddings = self.llm.get_output_embeddings()
+        if output_embeddings is None:
+            raise RuntimeError("LLM does not expose output embeddings.")
+        return output_embeddings(hidden)
+
     @torch.no_grad()
     def fm_solver_step(
         self,
