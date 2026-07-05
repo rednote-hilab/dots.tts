@@ -1,7 +1,36 @@
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+from torch.nn.attention.flex_attention import create_block_mask, flex_attention
+
+
+def _block_mask_flex_attention(q, k, v, block_mask):
+    backend = os.environ.get("DOTS_TTS_FLEX_ATTENTION_BACKEND")
+    kernel_options = None if not backend else {"BACKEND": backend.upper()}
+    return flex_attention(
+        q,
+        k,
+        v,
+        block_mask=block_mask,
+        kernel_options=kernel_options,
+    )
+
+
+_compiled_block_mask_flex_attention = torch.compile(
+    _block_mask_flex_attention,
+    fullgraph=True,
+    dynamic=False,
+    mode="max-autotune-no-cudagraphs",
+)
+
+_compiled_create_block_mask = torch.compile(
+    create_block_mask,
+    fullgraph=True,
+    dynamic=False,
+)
 
 
 class Dropout(nn.Module):
@@ -131,7 +160,7 @@ class Mlp(nn.Module):
         self.fc2 = nn.Linear(ffn_hidden_size, hidden_size)
         self.drop = Dropout(dropout)
 
-    def forward(self, x, _mask=None):
+    def forward(self, x, _mask=None, **_kwargs):
         x = self.fc1(x)
         x = self.act(x)
         x = self.drop(x)
@@ -148,33 +177,41 @@ def rotate_half(x):
 def apply_rotary_pos_emb(pos, t):
     if pos.dim() == 3:
         pos = pos.unsqueeze(1)
-    return t * pos.cos() + rotate_half(t) * pos.sin()
+    input_dtype = t.dtype
+    return (t * pos.cos() + rotate_half(t) * pos.sin()).to(dtype=input_dtype)
 
 
 class RotaryEmbedding(nn.Module):
     def __init__(self, dim, theta=50000):
         super().__init__()
+        self.dim = int(dim)
+        self._theta = float(theta)
         self.register_buffer(
             "inv_freq",
-            1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim)),
+            self._build_inv_freq(device=torch.device("cpu")),
             persistent=False,
         )
-        self._theta = float(theta)
+
+    def _build_inv_freq(self, device: torch.device) -> torch.Tensor:
+        return 1.0 / (
+            self._theta
+            ** (
+                torch.arange(0, self.dim, 2, device=device, dtype=torch.float32)
+                / self.dim
+            )
+        )
 
     def _apply(self, fn):
-        inv_freq = self.inv_freq
         super()._apply(fn)
-        self.inv_freq = inv_freq.to(device=self.inv_freq.device, dtype=torch.float32)
+        self.inv_freq = self._build_inv_freq(device=self.inv_freq.device)
         return self
 
     @torch.autocast(enabled=False, device_type="cuda")
     def forward(self, t):
         inv_freq = self.inv_freq
-        if inv_freq.device != t.device:
-            raise RuntimeError(
-                "RotaryEmbedding buffer device mismatch: "
-                f"inv_freq={inv_freq.device} input={t.device}."
-            )
+        if inv_freq.device != t.device or inv_freq.dtype != torch.float32:
+            self.inv_freq = self._build_inv_freq(device=t.device)
+            inv_freq = self.inv_freq
         t = t.to(dtype=inv_freq.dtype)
         if t.dim() == 1:
             freqs = torch.einsum("i , j -> i j", t, inv_freq)
@@ -197,6 +234,7 @@ class MultiHeadAttention(nn.Module):
         norm_layer: str = "LayerNorm",
         rotary_bias: bool = False,
         rotary_theta: float | None = 50000,
+        attn_backend: str = "sdpa",
         **_kwargs,
     ):
         super().__init__()
@@ -207,6 +245,9 @@ class MultiHeadAttention(nn.Module):
         self.head_dim = hidden_size // num_heads
         self.scale = self.head_dim**-0.5
         self.rotary_bias = rotary_bias
+        if attn_backend not in {"sdpa", "flex"}:
+            raise ValueError(f"Unsupported attention backend: {attn_backend!r}.")
+        self.attn_backend = attn_backend
 
         self.q_proj = nn.Linear(hidden_size, hidden_size, bias=qkv_bias)
         self.k_proj = nn.Linear(hidden_size, hidden_size, bias=qkv_bias)
@@ -272,62 +313,3 @@ class MultiHeadAttention(nn.Module):
 
         out = rearrange(out, "b h n d -> b n (h d)")
         return self.o_dropout(self.o_proj(out))
-
-    def decode_step(self, x, *, cache, positions: torch.Tensor):
-        if x.size(1) <= 0:
-            raise ValueError("MultiHeadAttention.decode_step expects a non-empty input.")
-        if positions.ndim != 1 or positions.size(0) != x.size(1):
-            raise ValueError(
-                "MultiHeadAttention.decode_step positions must match the decode block length."
-            )
-
-        q = self.q_proj(x)
-        k = self.k_proj(x)
-        v = self.v_proj(x)
-
-        q = rearrange(q, "b n (h d) -> b h n d", h=self.num_heads)
-        k = rearrange(k, "b n (h d) -> b h n d", h=self.num_heads)
-        v = rearrange(v, "b n (h d) -> b h n d", h=self.num_heads)
-        q, k = self.q_norm(q), self.k_norm(k)
-        block_len = q.size(2)
-
-        if self.rotary_bias:
-            rotary_emb = self.rotary(positions)
-            q = apply_rotary_pos_emb(rotary_emb, q)
-            k = apply_rotary_pos_emb(rotary_emb, k)
-
-        cached_k, cached_v = cache
-        cached_k.index_copy_(2, positions, k)
-        cached_v.index_copy_(2, positions, v)
-
-        cache_capacity = cached_k.size(2)
-        key_positions = torch.arange(
-            cache_capacity,
-            device=x.device,
-            dtype=torch.long,
-        ).unsqueeze(0)
-        query_positions = positions.unsqueeze(1)
-        causal_mask = key_positions <= query_positions
-        valid_mask = key_positions <= positions[-1]
-        attn_bias = torch.zeros(
-            q.size(0),
-            self.num_heads,
-            block_len,
-            cache_capacity,
-            dtype=q.dtype,
-            device=q.device,
-        )
-        attn_bias.masked_fill_(
-            (causal_mask & valid_mask).unsqueeze(0).unsqueeze(0).logical_not(),
-            float("-inf"),
-        )
-
-        out = F.scaled_dot_product_attention(
-            q,
-            cached_k,
-            cached_v,
-            attn_mask=attn_bias,
-            dropout_p=self.attn_drop.p if self.training else 0.0,
-        )
-        out = rearrange(out, "b h n d -> b n (h d)")
-        return self.o_dropout(self.o_proj(out)), cache

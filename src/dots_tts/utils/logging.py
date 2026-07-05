@@ -13,6 +13,28 @@ DEFAULT_LOG_FORMAT = (
 )
 
 
+def categorized_log(category: str, message: str) -> str:
+    normalized_category = category.strip().lower().replace("_", "-")
+    if not normalized_category:
+        return message
+    return f"[{normalized_category}] {message}"
+
+
+def log_level_enabled(level: str) -> bool:
+    try:
+        level_no = logger.level(level.upper()).no
+    except ValueError:
+        return False
+    core = getattr(logger, "_core", None)
+    min_level = getattr(core, "min_level", None)
+    if min_level is None:
+        return True
+    try:
+        return level_no >= min_level
+    except TypeError:
+        return False
+
+
 def configure_logging(
     *,
     level: str | None = None,

@@ -17,6 +17,8 @@ dots.tts achieves the best average performance on **Seed-TTS-Eval**, with WERs o
 
 ### News
 
+* **[2026.07]** 🚀 Shipped a **high-performance streaming inference path** — under `--optimize`, `dots.tts-soar` reaches RTF p50 **0.20 / 0.18** and first-chunk latency **225 ms / 69 ms** (voice cloning / text-only); `dots.tts-mf` reaches **0.15 / 0.13** and **204 ms / 68 ms** respectively. See the [Efficiency](#-efficiency) section for details.
+
 * **[2026.06]** 🔥 We have released **dots.tts** — 2B fully continuous AR TTS, with pretrained / self-corrective-aligned / MeanFlow-distilled checkpoints and full inference & fine-tuning code under Apache-2.0.
 
 ---
@@ -38,6 +40,7 @@ dots.tts achieves the best average performance on **Seed-TTS-Eval**, with WERs o
   - [MiniMax Multilingual](#minimax-multilingual-24-languages)
   - [CV3-Eval](#cv3-eval)
   - [EmergentTTS-Eval](#emergenttts-eval)
+- [Efficiency](#-efficiency)
 - [Community Projects](#-community-projects)
 - [Risks and Limitations](#%EF%B8%8F-risks-and-limitations)
 - [Citation](#-citation)
@@ -386,6 +389,37 @@ Win-rate judged head-to-head against `gpt-4o-mini-tts` by Gemini-2.5-Pro-0506 ac
 | F5-TTS | basic\_ref\_en | 16.47 | 15.3% | 26.8% | 21.6% | 1.8% | 1.4% | 14.8% | 23.8% |
 
 <sub>\* Closed-source / commercial. Table shows a selected subset for brevity — for the full leaderboard, see [EmergentTTS-Eval-public](https://github.com/boson-ai/EmergentTTS-Eval-public/blob/main/LEADERBOARD_gemini-2.5-pro-05-06.md).</sub>
+
+---
+
+## ⚡ Efficiency
+
+Streaming-inference benchmarks under `--optimize` on a Seed-TTS-Eval mix (100 utterances across zh / en / zh-hard, first post-warmup request excluded, **N=99 per group**). `voice_cloning` uses reference audio + transcript; `text_only` uses text with no reference. Common config: `precision=bfloat16`, `guidance_scale=1.2`, `seed=42`; SOAR uses `num_steps=10`, MF uses `num_steps=4`.
+
+> **Note:** `--optimize` triggers a one-shot `torch.compile` warmup that walks every DiT compile bucket + KvPrefill + vocoder chunk sizes. Cold start takes **~3 minutes** on H100 / A100; every subsequent request runs at the steady-state RTF above. Pass `warmup_on_optimize=False` to `DotsTtsRuntime` if you want to skip warmup and accept the first request paying the compile cost.
+
+### Steady-State Latency
+
+| Group | audio mean (s) | latency p50 / p90 (s) | first-chunk p50 / p90 (ms) | RTF mean / p50 / p90 | peak alloc (GB) |
+|---|---:|---:|---:|---:|---:|
+| SOAR / voice_cloning | 7.57 | 1.13 / 3.04 | 225 / 404 | 0.21 / 0.20 / 0.26 | 7.86 |
+| SOAR / text_only     | 7.78 | 0.95 / 3.02 |  69 /  79 | 0.18 / 0.18 / 0.20 | 7.85 |
+| MF   / voice_cloning | 7.46 | 0.88 / 1.73 | 204 / 381 | 0.16 / 0.15 / 0.21 | 5.74 |
+| MF   / text_only     | 7.65 | 0.68 / 2.06 |  68 /  78 | 0.13 / 0.13 / 0.15 | 5.73 |
+
+### Memory Footprint by Length Bucket
+
+Bucket = total prompt + generated audio in latent patches (one patch ≈ 160 ms).
+
+| Bucket | Total audio cap | SOAR / voice_cloning | SOAR / text_only | MF / voice_cloning | MF / text_only |
+|---|---:|---:|---:|---:|---:|
+| <64 patches  | <10.24s | 5.65 GB | 5.64 GB | 5.30 GB | 5.29 GB |
+| <128 patches | <20.48s | 6.53 GB | 6.52 GB | 5.47 GB | 5.46 GB |
+| <256 patches | <40.96s | 7.86 GB | 7.85 GB | 5.74 GB | 5.73 GB |
+| <512 patches | <81.92s | 10.51 GB\* | 10.51 GB\* | 6.29 GB\* | N/A\*\* |
+
+\* From explicit long-audio probes (actual spans within 256–512 patches).  
+\*\* `mf / text_only` did not reach the 256–512 bucket under either synthetic (x4) or real long-text probes; longest observed 237 patches at 5.73 GB.
 
 ---
 
