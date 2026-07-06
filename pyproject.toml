@@ -66,10 +66,9 @@ full = [
 "dots.tts" = "dots_tts.cli:main"
 
 [project.urls]
-# TODO: fill in before public launch
-Homepage = "https://github.com/<to-be-filled>/dots.tts"
-Repository = "https://github.com/<to-be-filled>/dots.tts"
-Issues = "https://github.com/<to-be-filled>/dots.tts/issues"
+Homepage = "https://github.com/rednote-hilab/dots.tts"
+Repository = "https://github.com/rednote-hilab/dots.tts"
+Issues = "https://github.com/rednote-hilab/dots.tts/issues"
 
 [tool.setuptools]
 include-package-data = false
