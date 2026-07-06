@@ -57,6 +57,39 @@ class RuntimeInputs(TypedDict, total=False):
 
 class DotsTtsRuntime:
     # region Lifecycle and pretrained loading
+    @staticmethod
+    def _check_torch_env(precision: str) -> None:
+        import warnings
+
+        import torchaudio
+
+        torch_minor = tuple(torch.__version__.split("+")[0].split(".")[:2])
+        torchaudio_minor = tuple(torchaudio.__version__.split("+")[0].split(".")[:2])
+        if torch_minor != torchaudio_minor:
+            raise RuntimeError(
+                f"torch ({torch.__version__}) and torchaudio "
+                f"({torchaudio.__version__}) minor versions must match "
+                f"(torch built for CUDA {torch.version.cuda}). Fix by installing "
+                f"both together, matched to your system CUDA:\n"
+                f"  pip install 'torch=={torch_minor[0]}.{torch_minor[1]}.*' "
+                f"'torchaudio=={torch_minor[0]}.{torch_minor[1]}.*' "
+                f"--index-url https://download.pytorch.org/whl/cu<your_cuda_version>"
+            )
+
+        if not torch.cuda.is_available():
+            msg = (
+                f"CUDA is not available; torch will run on CPU. "
+                f"(torch was built for CUDA {torch.version.cuda!r}.) "
+                f"If your machine has a GPU, install a torch build matching your "
+                f"CUDA driver from https://pytorch.org/get-started/locally/."
+            )
+            if precision.lower() in {"bfloat16", "float16", "fp16", "bf16"}:
+                raise RuntimeError(
+                    f"{msg} Half-precision ({precision}) is not reliable on CPU; "
+                    f"install CUDA-matched torch or pass precision='float32'."
+                )
+            warnings.warn(msg, stacklevel=2)
+
     def __init__(
         self,
         model: DotsTtsModel,
@@ -69,6 +102,7 @@ class DotsTtsRuntime:
         vocoder_merge_steps: int = 4,
         warmup_on_optimize: bool = True,
     ):
+        self._check_torch_env(precision)
         self.model = model
         self.pretrained_path = pretrained_path
         self.precision = precision
