@@ -52,29 +52,37 @@ dots.tts achieves the best average performance on **Seed-TTS-Eval**, with WERs o
 
 ### Installation
 
-We recommend creating a fresh conda environment first (Python 3.10–3.12):
+We recommend a fresh conda environment (Python 3.10–3.12):
 
 ```bash
 conda create -n dots_tts python=3.10 -y
 conda activate dots_tts
 ```
 
-Then install from source:
+Install from PyPI:
 
 ```bash
-python -m pip install --upgrade pip
-python -m pip install -e . -c constraints/recommended.txt
+pip install dots.tts
+```
+
+Or from source (for local development / editable install):
+
+```bash
+git clone https://github.com/rednote-hilab/dots.tts
+cd dots.tts
+pip install -e . -c constraints/recommended.txt
 ```
 
 For training / linting extras:
 
 ```bash
-python -m pip install -e .[full] -c constraints/recommended.txt
+pip install 'dots.tts[full]'
+# or from source:
+pip install -e .[full] -c constraints/recommended.txt
 ```
 
-The constraints file pins the recommended versions. To use other compatible
-versions, omit `-c constraints/recommended.txt`; the compatibility ranges are
-declared in `pyproject.toml`.
+The `constraints/recommended.txt` file pins the reproducible versions;
+`pyproject.toml` declares compatibility ranges.
 
 ### Checkpoints
 
