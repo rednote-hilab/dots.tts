@@ -1239,13 +1239,17 @@ class EagerDiTRunner:
 # --------------------------------------------------------------------------- #
 
 
-def _resolve_kv_attention_backend(*, optimize: bool, on_cuda: bool) -> str:
+def _resolve_kv_attention_backend(
+    *, optimize: bool, on_cuda: bool, default_backend: str | None = None
+) -> str:
     """Pick the KV-cache attention backend (flex vs sdpa) from env / device."""
     if not optimize:
         return "sdpa"
     env = os.environ.get("DOTS_TTS_DELAYED_DIT_BACKEND")
     if env is None:
-        return "flex" if on_cuda else "sdpa"
+        if default_backend is None:
+            return "flex" if on_cuda else "sdpa"
+        env = default_backend
     env = env.lower()
     if env not in {"sdpa", "flex"}:
         raise ValueError(
@@ -1677,7 +1681,7 @@ class DiTSolver:
                 kv_cache=kv_cache,
                 prefix_sequence=sequence[:, :persistent_len],
                 cfg_prefix_sequence=(
-                    None if self.meanflow else cfg_sequence[:, :persistent_len]  # type: ignore[index]
+                    None if cfg_sequence is None else cfg_sequence[:, :persistent_len]
                 ),
                 all_mods_by_ode=all_mods_by_ode,
             )

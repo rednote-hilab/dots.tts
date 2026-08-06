@@ -23,9 +23,9 @@ class DoubleStreamingSession:
         prompt_audio_path: str | None = None,
         prompt_text: str | None = None,
         template_name: str = "tts_interleave",
-        ode_method: str = "euler",
-        num_steps: int = 10,
-        guidance_scale: float = 1.2,
+        ode_method: str | None = None,
+        num_steps: int | None = None,
+        guidance_scale: float | None = None,
         speaker_scale: float = 1.5,
         eos_threshold: float = 0.8,
         initial_silence_audio_tokens: int | None = None,
@@ -41,6 +41,11 @@ class DoubleStreamingSession:
                 "tts_interleave double streaming does not support prompt_text."
             )
 
+        ode_method, num_steps, guidance_scale = runtime.resolve_sampling_options(
+            ode_method=ode_method,
+            num_steps=num_steps,
+            guidance_scale=guidance_scale,
+        )
         self.runtime = runtime
         self.model = runtime.model
         self.device = runtime.device
@@ -376,9 +381,9 @@ class DotsTtsRuntimeDoubleStreaming(DotsTtsRuntime):
         prompt_audio_path: str | None = None,
         prompt_text: str | None = None,
         template_name: str = "tts_interleave",
-        ode_method: str = "euler",
-        num_steps: int = 10,
-        guidance_scale: float = 1.2,
+        ode_method: str | None = None,
+        num_steps: int | None = None,
+        guidance_scale: float | None = None,
         speaker_scale: float = 1.5,
         eos_threshold: float = 0.8,
         initial_silence_audio_tokens: int | None = None,

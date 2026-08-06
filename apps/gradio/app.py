@@ -22,7 +22,6 @@ from apps.gradio.constants import (  # noqa: E402
     DEFAULT_LOG_FILE,
     DEFAULT_MAX_GENERATE_LENGTH,
     DEFAULT_NUM_STEPS,
-    DEFAULT_ODE_METHOD,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_OUTPUT_RETENTION,
     DEFAULT_PORT,
@@ -393,6 +392,9 @@ def build_demo(gr, app_config, app_service) -> "gr.Blocks":
         resolve_prompt_selection,
     )
 
+    sampling_controls = app_service.sampling_controls()
+    sampling_locked = bool(sampling_controls["locked"])
+
     def select_prompt_preset(prompt_name: str):
         audio_path, prompt_text = resolve_prompt_selection(
             prompt_name,
@@ -494,21 +496,29 @@ def build_demo(gr, app_config, app_service) -> "gr.Blocks":
                     elem_classes="strong-label",
                 )
                 with gr.Accordion("⚙️ Settings", open=False, elem_classes="settings-card"):
+                    if sampling_locked:
+                        gr.Textbox(
+                            label="Solver",
+                            value=str(sampling_controls["solver"]),
+                            interactive=False,
+                        )
                     with gr.Row(elem_classes="settings-slider-row"):
                         num_steps = gr.Slider(
                             label="Num Steps",
                             minimum=1,
                             maximum=32,
                             step=1,
-                            value=app_config.default_num_steps,
+                            value=sampling_controls["num_steps"],
+                            interactive=not sampling_locked,
                         )
                     with gr.Row(elem_classes="settings-slider-row"):
                         guidance_scale = gr.Slider(
                             label="Guidance Scale",
-                            minimum=1.0,
+                            minimum=0.0 if sampling_locked else 1.0,
                             maximum=3.0,
                             step=0.1,
-                            value=app_config.default_guidance_scale,
+                            value=sampling_controls["guidance_scale"],
+                            interactive=not sampling_locked,
                         )
                     with gr.Row(elem_classes="control-row"):
                         seed = gr.Number(
@@ -546,8 +556,9 @@ def build_demo(gr, app_config, app_service) -> "gr.Blocks":
                 )
                 ode_method = gr.Textbox(
                     label="ODE Method",
-                    value=DEFAULT_ODE_METHOD,
+                    value=sampling_controls["ode_method"],
                     lines=1,
+                    interactive=not sampling_locked,
                 )
                 speaker_scale = gr.Slider(
                     label="Speaker Scale",
@@ -561,7 +572,7 @@ def build_demo(gr, app_config, app_service) -> "gr.Blocks":
                 build_startup_config_panel(gr, app_config)
         else:
             synthesis_mode = gr.State(value="tts")
-            ode_method = gr.State(value=DEFAULT_ODE_METHOD)
+            ode_method = gr.State(value=sampling_controls["ode_method"])
             speaker_scale = gr.State(value=app_config.default_speaker_scale)
             metrics = gr.State(value={})
 

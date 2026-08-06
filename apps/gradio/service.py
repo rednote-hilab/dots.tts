@@ -460,6 +460,29 @@ class GradioAppService:
             )
         return self._runtime, resolved_model_name_or_path
 
+    def sampling_controls(self) -> dict[str, Any]:
+        """Return the fixed model's artifact-resolved sampling UI contract."""
+
+        runtime, _resolved_model_name_or_path = self._get_runtime(
+            self.config.default_model_name_or_path
+        )
+        sampling = runtime.model.config.sampling
+        if sampling is None:
+            return {
+                "solver": runtime.model.core.mode,
+                "locked": False,
+                "ode_method": DEFAULT_ODE_METHOD,
+                "num_steps": self.config.default_num_steps,
+                "guidance_scale": self.config.default_guidance_scale,
+            }
+        return {
+            "solver": sampling.solver,
+            "locked": True,
+            "ode_method": sampling.ode_method,
+            "num_steps": sampling.num_steps,
+            "guidance_scale": sampling.guidance_scale,
+        }
+
     def _build_stream_request_id(
         self,
         runtime: DotsTtsRuntime,
@@ -557,14 +580,21 @@ class GradioAppService:
                 runtime, resolved_model_name_or_path = self._get_runtime(
                     self.config.default_model_name_or_path,
                 )
+                ode_method, num_steps, guidance_scale = (
+                    runtime.resolve_sampling_options(
+                        ode_method=None,
+                        num_steps=None,
+                        guidance_scale=None,
+                    )
+                )
                 warmup_request = SynthesisRequest(
                     model_name_or_path=self.config.default_model_name_or_path,
                     text=warmup_text,
                     execution_mode=self.config.execution_mode,
                     template_name="tts",
-                    ode_method=DEFAULT_ODE_METHOD,
-                    num_steps=self.config.default_num_steps,
-                    guidance_scale=self.config.default_guidance_scale,
+                    ode_method=ode_method,
+                    num_steps=num_steps,
+                    guidance_scale=guidance_scale,
                     speaker_scale=self.config.default_speaker_scale,
                     normalize_text=False,
                     seed=DEFAULT_SEED,

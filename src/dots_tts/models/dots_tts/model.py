@@ -28,6 +28,7 @@ from dots_tts.modules.backbone.encoder_inference import (
     SemanticEncoderInference,
 )
 from dots_tts.modules.backbone.llm_inference import LLMInference, LLMInferenceState
+from dots_tts.modules.backbone.scm_inference import SCMDiTSolver
 from dots_tts.modules.speaker.encoder import SpeakerXVectorFeatures
 from dots_tts.modules.vocoder.bigvgan import AudioVAE
 from dots_tts.modules.vocoder.vocoder_inference import VocoderInference
@@ -745,19 +746,33 @@ class DotsTtsModel(nn.Module):
             self._llm_inference_core_id = core_id
         return adapter
 
-    def _get_dit_solver(self, *, meanflow: bool) -> DiTSolver:
+    def _get_dit_solver(self, *, solver_mode: str) -> DiTSolver:
         key = (
-            "meanflow" if meanflow else "flow_matching",
+            solver_mode,
             bool(self._optimize_enabled),
         )
         solver = self._fm_dit_solvers.get(key)
         if solver is None:
-            solver = DiTSolver(
-                DiTInferenceContext.from_core(self.core),
-                optimize=self._optimize_enabled,
-                bucket_resolver=self._resolve_generate_length_bucket,
-                meanflow=meanflow,
-            )
+            context = DiTInferenceContext.from_core(self.core)
+            if solver_mode == "scm":
+                sampling = self.config.sampling
+                if sampling is None:
+                    raise RuntimeError("sCM solver requires artifact sampling config.")
+                solver = SCMDiTSolver(
+                    context,
+                    optimize=self._optimize_enabled,
+                    bucket_resolver=self._resolve_generate_length_bucket,
+                    tau_mid=sampling.tau_mid,
+                )
+            elif solver_mode in {"flow_matching", "meanflow"}:
+                solver = DiTSolver(
+                    context,
+                    optimize=self._optimize_enabled,
+                    bucket_resolver=self._resolve_generate_length_bucket,
+                    meanflow=solver_mode == "meanflow",
+                )
+            else:
+                raise ValueError(f"Unsupported DiT solver mode: {solver_mode!r}.")
             self._fm_dit_solvers[key] = solver
         return solver
 
@@ -1196,14 +1211,21 @@ class DotsTtsModel(nn.Module):
             null_g_cond = state.fm_null_g_cond
             if null_g_cond is None:
                 raise RuntimeError("FM null conditioning buffer is not initialized.")
-            meanflow = self.core.mode == "meanflow"
+            sampling = self.config.sampling
+            if sampling is not None:
+                sampling.resolve(
+                    ode_method=ode_method,
+                    num_steps=num_steps,
+                    guidance_scale=guidance_scale,
+                )
+            solver_mode = "scm" if sampling is not None else self.core.mode
             cfg_sequence = state.fm_cfg_sequence
-            if not meanflow and cfg_sequence is None:
+            if solver_mode == "flow_matching" and cfg_sequence is None:
                 raise RuntimeError("FM cfg static buffer is not initialized.")
-            audio_patch = self._get_dit_solver(meanflow=meanflow).decode_next(
+            audio_patch = self._get_dit_solver(solver_mode=solver_mode).decode_next(
                 state.fm_dit_state,
                 sequence=sequence,
-                cfg_sequence=cfg_sequence,
+                cfg_sequence=None if solver_mode == "scm" else cfg_sequence,
                 fm_seq_len=state.fm_seq_len,
                 null_g_cond=null_g_cond,
                 g_cond=g_cond,
@@ -1595,5 +1617,3 @@ class DotsTtsModel(nn.Module):
         return audio
 
     # endregion Public generation APIs
-
-
