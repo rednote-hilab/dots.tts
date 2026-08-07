@@ -17,6 +17,10 @@ dots.tts achieves the best average performance on **Seed-TTS-Eval**, with WERs o
 
 ### News
 
+* **[2026.08]** 🚀 [SGLang Omni](https://github.com/sgl-project/sglang-omni) now fully supports dots.tts, with voice cloning performance on Seed-TTS-Eval **EN** (N=1088, concurrency=18, warmup=4) reaching RTF mean / median / p95 = **0.247 / 0.223 / 0.465**; latency mean / median = **0.954 / 0.816** s (audio mean 4.01 s).
+
+【TODO：Update it here】
+
 * **[2026.07]** 🚀 Shipped a **high-performance inference path** — under `--optimize`, `dots.tts-soar` reaches RTF p50 **0.20 / 0.18** and first-chunk latency **225 ms / 69 ms** (voice cloning / text-only); `dots.tts-mf` reaches **0.15 / 0.13** and **204 ms / 68 ms** respectively. See the [Efficiency](#-efficiency) section for details.
 
 * **[2026.06]** 🔥 We have released **dots.tts** — 2B fully continuous AR TTS, with pretrained / self-corrective-aligned / MeanFlow-distilled checkpoints and full inference & fine-tuning code under Apache-2.0.
@@ -83,6 +87,20 @@ pip install -e .[full] -c constraints/recommended.txt
 
 The `constraints/recommended.txt` file pins the reproducible versions;
 `pyproject.toml` declares compatibility ranges.
+
+To use SGLang Omni for high-performance high-concurrency voice cloning:
+
+```bash
+git clone git@github.com:sgl-project/sglang-omni.git
+cd sglang-omni
+
+uv venv .venv -p 3.12
+source .venv/bin/activate
+
+uv pip install -v -e .
+```
+
+Detailed installation instructions can be found in this [guidance](https://sgl-project.github.io/sglang-omni/get_started/installation.html).
 
 ### Checkpoints
 
@@ -273,6 +291,10 @@ Common MeanFlow flags:
 
 ---
 
+### SGLang Omni Usage
+
+【TODO：Update it here】
+
 ## 💡 Usage Tips
 
 - **Keep the reference audio around 10s**. Longer audio won't yield better results.
@@ -415,6 +437,7 @@ Streaming-inference benchmarks under `--optimize` on a Seed-TTS-Eval mix (100 ut
 | MF   / voice_cloning | 7.46 | 0.88 / 1.73 | 204 / 381 | 0.16 / 0.15 / 0.21 | 5.74 |
 | MF   / text_only     | 7.65 | 0.68 / 2.06 |  68 /  78 | 0.13 / 0.13 / 0.15 | 5.73 |
 
+
 ### Memory Footprint by Length Bucket
 
 Bucket = total prompt + generated audio in latent patches (one patch ≈ 160 ms).
@@ -429,7 +452,9 @@ Bucket = total prompt + generated audio in latent patches (one patch ≈ 160 ms)
 \* From explicit long-audio probes (actual spans within 256–512 patches).  
 \*\* `mf / text_only` did not reach the 256–512 bucket under either synthetic (x4) or real long-text probes; longest observed 237 patches at 5.73 GB.
 
----
+### SGLang Omni Efficiency
+
+【TODO：Update it here】
 
 ## 🤝 Community Projects
 
@@ -437,6 +462,7 @@ Third-party ports and integrations of dots.tts, maintained by the community.
 
 | Project | Description | Maintainer |
 |---|---|---|
+| [sglang-omni](https://github.com/sgl-project/sglang-omni) | SGLang Omni support for dots.tts | [@sgl-project](https://github.com/sgl-project) |
 | [dots-tts-mlx](https://github.com/sb1992/dots-tts-mlx) | Pure-MLX inference port for Apple Silicon (Python) | [@sb1992](https://github.com/sb1992) |
 | [mlx-swift-dots-tts](https://github.com/sammcj/mlx-swift-dots-tts) | Native MLX Swift port for Apple Silicon (no Python runtime) | [@sammcj](https://github.com/sammcj) |
 | [Dots-TTS-ComfyUI](https://github.com/Saganaki22/Dots-TTS-ComfyUI) | ComfyUI custom nodes for TTS, voice cloning, and Whisper transcription | [@Saganaki22](https://github.com/Saganaki22) |
