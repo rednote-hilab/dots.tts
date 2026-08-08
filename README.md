@@ -17,9 +17,7 @@ dots.tts achieves the best average performance on **Seed-TTS-Eval**, with WERs o
 
 ### News
 
-* **[2026.08]** 🚀 [SGLang Omni](https://github.com/sgl-project/sglang-omni) now fully supports dots.tts, with voice cloning performance on Seed-TTS-Eval **EN** (N=1088, concurrency=18, warmup=4) reaching RTF mean / median / p95 = **0.247 / 0.223 / 0.465**; latency mean / median = **0.954 / 0.816** s (audio mean 4.01 s).
-
-【TODO：Update it here】
+* **[2026.08]** 🚀 [SGLang Omni](https://github.com/sgl-project/sglang-omni) now fully supports dots.tts (`mf` / `soar` / `base`) with continuous batching, streaming PCM, and CUDA-graph decode. On Seed-TTS-Eval **EN** (1× H100, `dots.tts-mf`, `num_steps=4`), peak throughput reaches **4.64 req/s** / **19.36 audio_s/s** at concurrency 16 (WER **1.31%**). See [SGLang Omni Usage](#sglang-omni-usage) and the [cookbook](https://sgl-project.github.io/sglang-omni/cookbook/dots_tts.html).
 
 * **[2026.07]** 🚀 Shipped a **high-performance inference path** — under `--optimize`, `dots.tts-soar` reaches RTF p50 **0.20 / 0.18** and first-chunk latency **225 ms / 69 ms** (voice cloning / text-only); `dots.tts-mf` reaches **0.15 / 0.13** and **204 ms / 68 ms** respectively. See the [Efficiency](#-efficiency) section for details.
 
@@ -37,6 +35,7 @@ dots.tts achieves the best average performance on **Seed-TTS-Eval**, with WERs o
   - [Web Demo (Gradio)](#web-demo-gradio)
   - [Fine-tuning](#fine-tuning)
   - [MeanFlow Distillation](#meanflow-distillation)
+  - [SGLang Omni Usage](#sglang-omni-usage)
 - [Usage Tips](#-usage-tips)
 - [Architecture](#-architecture)
 - [Performance](#-performance)
@@ -45,6 +44,7 @@ dots.tts achieves the best average performance on **Seed-TTS-Eval**, with WERs o
   - [CV3-Eval](#cv3-eval)
   - [EmergentTTS-Eval](#emergenttts-eval)
 - [Efficiency](#-efficiency)
+  - [SGLang Omni Efficiency](#sglang-omni-efficiency)
 - [Community Projects](#-community-projects)
 - [Risks and Limitations](#%EF%B8%8F-risks-and-limitations)
 - [Citation](#-citation)
@@ -293,7 +293,88 @@ Common MeanFlow flags:
 
 ### SGLang Omni Usage
 
-【TODO：Update it here】
+[SGLang Omni](https://github.com/sgl-project/sglang-omni) serves dots.tts behind an OpenAI-compatible `/v1/audio/speech` API with continuous batching (MeanFlow), streaming PCM, and CUDA-graph backbone decode. Full details live in the [SGLang Omni dots.tts cookbook](https://sgl-project.github.io/sglang-omni/cookbook/dots_tts.html).
+
+Install Omni as in [SGLang Omni Installation](https://sgl-project.github.io/sglang-omni/get_started/installation.html), then from the `sglang-omni` checkout:
+
+```bash
+hf download dots-studio/dots.tts-mf
+
+sgl-omni serve \
+  --model-path dots-studio/dots.tts-mf \
+  --config examples/configs/dots_tts.yaml \
+  --port 8000
+```
+
+| Checkpoint | Omni config | Notes |
+|---|---|---|
+| [`dots-studio/dots.tts-mf`](https://huggingface.co/dots-studio/dots.tts-mf) | `examples/configs/dots_tts.yaml` | MeanFlow. Continuous batching (`max_running_requests=16`), `num_steps=4`. **Recommended for serving.** |
+| [`dots-studio/dots.tts-soar`](https://huggingface.co/dots-studio/dots.tts-soar) | `examples/configs/dots_tts_soar.yaml` | Flow matching + CFG. Single request at a time (`max_running_requests=1`), `num_steps=10`. |
+| [`dots-studio/dots.tts-base`](https://huggingface.co/dots-studio/dots.tts-base) | `examples/configs/dots_tts_soar.yaml` | Same as SOAR; pass `--model-path dots-studio/dots.tts-base`. |
+
+`rednote-hilab/dots.tts-*` weights are interchangeable via `--model-path`. Use the config file — it enables the compiled acoustic tail / vocoder and backbone decode CUDA graph. Continuous batching is MeanFlow-only.
+
+Voice cloning (reference audio + transcript required):
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "dots-studio/dots.tts-mf",
+    "input": "Have a nice day and enjoy south california sunshine.",
+    "references": [{
+      "audio_path": "docs/_static/audio/male-voice.wav",
+      "text": "Hey, Adam here. Let'\''s create something that feels real, sounds human, and connects every time."
+    }],
+    "seed": 42
+  }' \
+  --output output.wav
+```
+
+```python
+import requests
+
+resp = requests.post(
+    "http://localhost:8000/v1/audio/speech",
+    json={
+        "model": "dots-studio/dots.tts-mf",
+        "input": "Have a nice day and enjoy south california sunshine.",
+        "references": [{
+            "audio_path": "docs/_static/audio/male-voice.wav",
+            "text": "Hey, Adam here. Let's create something that feels real, sounds human, and connects every time.",
+        }],
+        "seed": 42,
+    },
+)
+resp.raise_for_status()
+with open("output.wav", "wb") as f:
+    f.write(resp.content)
+```
+
+`ref_audio` / `ref_text` are accepted as a shorthand for `references[0].audio_path` / `references[0].text`.
+
+Streaming (raw 48 kHz PCM; set `"stream": true` and `"response_format": "pcm"`):
+
+```bash
+curl -N -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "dots-studio/dots.tts-mf",
+    "input": "Get the trust fund to the bank early.",
+    "references": [{
+      "audio_path": "docs/_static/audio/female-voice.wav",
+      "text": "By repeating what students say, teachers can demonstrate that they are listening. By extending what students say."
+    }],
+    "stream": true,
+    "response_format": "pcm",
+    "seed": 42
+  }' \
+  --output output.pcm
+
+ffmpeg -f s16le -ar 48000 -ac 1 -i output.pcm output.wav
+```
+
+Solver knobs (`speaker_scale`, `guidance_scale`, `eos_threshold`, `num_steps`, …) go under `stage_params.latent_engine` — not as top-level fields. `temperature` / `top_p` / `top_k` do not apply (continuous latent; no token sampler). MeanFlow fixes `num_steps=4` engine-wide for continuous batching.
 
 ## 💡 Usage Tips
 
@@ -454,7 +535,38 @@ Bucket = total prompt + generated audio in latent patches (one patch ≈ 160 ms)
 
 ### SGLang Omni Efficiency
 
-【TODO：Update it here】
+Serving throughput on Seed-TTS-Eval **EN** against a single Omni server started from `examples/configs/dots_tts.yaml` (`max_running_requests=16`, bf16, `num_steps=4`, backbone decode CUDA graph + graph-captured acoustic tail). Each row is the mean of two runs, seed 42. Hardware: **1× H100**. Full write-up: [SGLang Omni cookbook — Performance](https://sgl-project.github.io/sglang-omni/cookbook/dots_tts.html#performance).
+
+| Concurrency | Throughput (req/s) | Mean latency | RTF (per-req) | audio_s/s | WER |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 0.90 | 1.11 s | 0.284 | 3.58 | 1.06% |
+| 2 | 1.48 | 1.35 s | 0.329 | 6.16 | 1.25% |
+| 4 | 2.43 | 1.64 s | 0.399 | 10.14 | 1.36% |
+| 8 | 3.99 | 2.00 s | 0.486 | 16.65 | 1.31% |
+| 16 | 4.64 | 3.43 s | 0.830 | 19.36 | 1.31% |
+| 32 | 4.43 | 7.15 s | 1.797 | 18.47 | 1.27% |
+
+Zero failed requests in every run, and no sample above 50% WER. c=1 is a 50-sample latency probe; the other rows use the full 1,088-sample set. WER is measured with `Qwen/Qwen3-ASR-1.7B` on the first run of each row.
+
+To reproduce (server already running as above):
+
+```bash
+python -m benchmarks.eval.benchmark_tts_seedtts \
+  --meta zhaochenyang20/seed-tts-eval-arrow \
+  --model dots-studio/dots.tts-mf \
+  --ref-format references \
+  --base-url http://127.0.0.1:8000 --port 8000 \
+  --lang en --max-concurrency 16 --warmup 8 --seed 42 \
+  --generate-only --use-existing-server \
+  --output-dir results/dots-seedtts-en-c16
+
+python -m benchmarks.eval.benchmark_tts_seedtts \
+  --meta zhaochenyang20/seed-tts-eval-arrow \
+  --model dots-studio/dots.tts-mf \
+  --ref-format references --lang en --seed 42 \
+  --transcribe-only --port 8000 \
+  --output-dir results/dots-seedtts-en-c16
+```
 
 ## 🤝 Community Projects
 
@@ -462,7 +574,7 @@ Third-party ports and integrations of dots.tts, maintained by the community.
 
 | Project | Description | Maintainer |
 |---|---|---|
-| [sglang-omni](https://github.com/sgl-project/sglang-omni) | SGLang Omni support for dots.tts | [@sgl-project](https://github.com/sgl-project) |
+| [sglang-omni](https://github.com/sgl-project/sglang-omni) | High-concurrency serving for dots.tts ([cookbook](https://sgl-project.github.io/sglang-omni/cookbook/dots_tts.html)) | [@sgl-project](https://github.com/sgl-project) |
 | [dots-tts-mlx](https://github.com/sb1992/dots-tts-mlx) | Pure-MLX inference port for Apple Silicon (Python) | [@sb1992](https://github.com/sb1992) |
 | [mlx-swift-dots-tts](https://github.com/sammcj/mlx-swift-dots-tts) | Native MLX Swift port for Apple Silicon (no Python runtime) | [@sammcj](https://github.com/sammcj) |
 | [Dots-TTS-ComfyUI](https://github.com/Saganaki22/Dots-TTS-ComfyUI) | ComfyUI custom nodes for TTS, voice cloning, and Whisper transcription | [@Saganaki22](https://github.com/Saganaki22) |
