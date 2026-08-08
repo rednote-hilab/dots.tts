@@ -104,13 +104,17 @@ Detailed installation instructions can be found in this [guidance](https://sgl-p
 
 ### Checkpoints
 
-Three pretrained checkpoints are released on Hugging Face. All three share the same backbone — choose by the quality / inference-cost tradeoff:
+Five pretrained checkpoints are released on Hugging Face. All five share the same backbone — choose by the quality / inference-cost tradeoff:
 
-| Model | Description | Recommended `--num-steps` |
+| Model | Description | Inference settings |
 |---|---|:---:|
 | [`rednote-hilab/dots.tts-base`](https://huggingface.co/rednote-hilab/dots.tts-base) | Pretrained checkpoint. | `10`–`32` (default `10`) |
 | [`rednote-hilab/dots.tts-soar`](https://huggingface.co/rednote-hilab/dots.tts-soar) | Self-corrective-aligned (SCA) checkpoint on top of `dots.tts-base`. Best voice cloning performance. | `10`–`32` (default `10`) |
-| [`rednote-hilab/dots.tts-mf`](https://huggingface.co/rednote-hilab/dots.tts-mf) | MeanFlow-distilled student from `dots.tts-soar`. Recommended if you care about inference speed. | `4` |
+| [`rednote-hilab/dots.tts-mf`](https://huggingface.co/rednote-hilab/dots.tts-mf) | MeanFlow-distilled student from `dots.tts-soar`. Not recommended. | NFE `4` |
+| [`rednote-hilab/dots.tts-rl`](https://huggingface.co/rednote-hilab/dots.tts-rl) | Reinforcement-learning post-trained checkpoint. Recommended for one-step inference. | NFE `1` |
+| [`rednote-hilab/dots.tts-scm-2step`](https://huggingface.co/rednote-hilab/dots.tts-scm-2step) | sCM-distilled checkpoint. Recommended for two-step inference. | NFE `2` |
+
+For fast inference, we recommend `dots.tts-rl` for one-step generation or `dots.tts-scm-2step` for two-step generation.
 
 Pass the repo id directly to `--model-name-or-path` (or `DotsTtsRuntime.from_pretrained`) — the snapshot is fetched on first use and cached locally.
 
@@ -143,14 +147,33 @@ dots.tts \
   --text "Hello, this is a quick speech synthesis test." \
   --num-steps 10 \
   --output output.wav
+
+# One-step inference with the RL checkpoint
+dots.tts \
+  --model-name-or-path rednote-hilab/dots.tts-rl \
+  --text "Hello, this is a one-step synthesis test." \
+  --prompt-audio /path/to/reference.wav \
+  --prompt-text "The exact transcript of the reference audio." \
+  --ode-method euler \
+  --num-steps 1 \
+  --guidance-scale 0 \
+  --output rl.wav
+
+# Two-step inference with the sCM checkpoint
+dots.tts \
+  --model-name-or-path rednote-hilab/dots.tts-scm-2step \
+  --text "Hello, this is a two-step synthesis test." \
+  --prompt-audio /path/to/reference.wav \
+  --prompt-text "The exact transcript of the reference audio." \
+  --output scm.wav
 ```
 
 Common flags:
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--num-steps` | Flow-matching sampling steps (higher = better quality, lower = faster) | `10` |
-| `--guidance-scale` | CFG scale (flow-matching only; MeanFlow has CFG fused into the student; values > 2 progressively amplify audio energy) | `1.2` |
+| `--num-steps` | Sampling steps. Uses an artifact-declared value when present; otherwise `10`. | artifact / `10` |
+| `--guidance-scale` | CFG scale. Uses an artifact-declared value when present; otherwise `1.2`. | artifact / `1.2` |
 | `--normalize-text` | Apply text normalization before inference (via [WeTextProcessing](https://github.com/wenet-e2e/WeTextProcessing)) | off |
 | `--language` | Add an explicit language tag to the input text; accepts `none`, `auto_detect`, language codes such as `EN` / `ZH`, or names such as `english` / `chinese` | `none` |
 | `--seed` | RNG seed (fixed seed → deterministic output) | `42` |
@@ -185,6 +208,9 @@ result = runtime.generate(
 
 sf.write("output.wav", result["audio"].float().cpu().squeeze().numpy(), result["sample_rate"])
 ```
+
+For an sCM artifact, omit `num_steps` and `guidance_scale`; `generate` and
+`generate_stream` read the required two-step/CFG=0 settings from the artifact.
 
 For low-latency playback or streaming to a client, use `generate_stream` instead — it yields audio chunks (`torch.Tensor`, shape `(1, samples)`) as they are produced. Arguments are identical to `generate`:
 
@@ -382,7 +408,7 @@ Solver knobs (`speaker_scale`, `guidance_scale`, `eos_threshold`, `num_steps`, �
 - **`--prompt-text` should match what's actually spoken in the reference audio**. Mismatches degrade stability and may cause word-level errors.
 - **Higher-quality references give better clones** — prefer a high sample rate, low background noise, no trailing noise, and natural-sounding speech.
 - **Try different `--seed` values for prosody variation**. Each seed produces a different rhythm and intonation — resample a few times if the default doesn't feel right.
-- **Increase `--num-steps` if quality isn't good enough**. More sampling steps trade compute for cleaner output and better expressiveness.
+- **For flow-matching checkpoints, increase `--num-steps` if quality isn't good enough**. Artifact-locked solvers such as two-step sCM reject incompatible step counts.
 - **Force a pronunciation with Pinyin for polyphones.** Replace the character in the input text with its tone-marked pinyin — e.g. write `我生平不hào此道` to force `好` to be read as `hào`. Use tone-marked pinyin only (`hǎo`, `hào`, `bā`); numbered forms like `hao4` or `ha4o` are **not** recognized. Useful when reseeding doesn't fix a polyphone misread.
 
 ---
@@ -423,6 +449,8 @@ Zero-shot, ~3 s reference prompt, scored by the benchmark's reference ASR and Wa
 | **dots.tts (Pretrain)** | **2B** | 1.34 / 76.8 | 0.96 / 80.5 | 6.46 / 79.2 | **2.92** / 78.8 |
 | **dots.tts (SCA)** | **2B** | 1.30 / **77.1** | 0.94 / **81.0** | 6.60 / **79.5** | 2.95 / **79.2** |
 | **dots.tts (MF, NFE=4)** | **2B** | 1.29 / 76.2 | 0.94 / 80.0 | 6.60 / 78.5 | 2.94 / 78.2 |
+| **dots.tts (RL, NFE=1)** | **2B** | 1.49 / 76.5 | 1.06 / 80.2 | 6.54 / 78.2 | 3.03 / 78.3 |
+| **dots.tts (sCM, NFE=2)** | **2B** | 1.49 / 76.5 | 0.97 / 80.3 | 6.53 / 78.8 | 3.00 / 78.5 |
 
 ### MiniMax Multilingual (24 languages)
 

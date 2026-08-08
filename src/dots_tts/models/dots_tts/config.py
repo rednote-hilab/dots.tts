@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import math
+from typing import Literal
+
+from pydantic import Field
+
 from dots_tts.config.base import ConfigBase, StrictConfigBase
 from dots_tts.modules.vocoder.config import AudioVAEConfig
 
@@ -49,6 +54,37 @@ class MeanFlowConfig(ConfigBase):
     use_duration_embedding: bool = True
 
 
+class SamplingConfig(StrictConfigBase):
+    solver: Literal["scm"]
+    ode_method: Literal["euler"] = "euler"
+    num_steps: Literal[2] = 2
+    guidance_scale: Literal[0.0] = 0.0
+    tau_mid: float = Field(default=1.3, gt=0.0, lt=math.pi / 2)
+
+    def resolve(
+        self,
+        *,
+        ode_method: str | None,
+        num_steps: int | None,
+        guidance_scale: float | None,
+    ) -> tuple[str, int, float]:
+        expected = (self.ode_method, self.num_steps, self.guidance_scale)
+        resolved = (
+            self.ode_method if ode_method is None else str(ode_method),
+            self.num_steps if num_steps is None else int(num_steps),
+            self.guidance_scale if guidance_scale is None else float(guidance_scale),
+        )
+        if resolved != expected:
+            raise ValueError(
+                f"{self.solver} artifact requires "
+                f"ode_method={expected[0]!r}, num_steps={expected[1]}, "
+                f"guidance_scale={expected[2]}; got "
+                f"ode_method={resolved[0]!r}, num_steps={resolved[1]}, "
+                f"guidance_scale={resolved[2]}."
+            )
+        return resolved
+
+
 class ModelConfig(ConfigBase):
     model_type: str = "dots_tts"
     latent_dim: int
@@ -62,10 +98,12 @@ class ModelConfig(ConfigBase):
     campplus_embedding_size: int | None = 512
     xvec_max_audio_seconds: float = 10.0
     meanflow: MeanFlowConfig | None = None
+    sampling: SamplingConfig | None = None
 
 
 __all__ = [
     "LossConfig",
     "MeanFlowConfig",
     "ModelConfig",
+    "SamplingConfig",
 ]

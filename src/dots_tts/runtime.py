@@ -320,12 +320,24 @@ class DotsTtsRuntime:
         # VOCODER_STREAM_INITIAL_UNMERGED_PATCHES chunks are 1 patch each,
         # subsequent chunks are vocoder_merge_steps patches each.
         initial_unmerged = int(self.model.VOCODER_STREAM_INITIAL_UNMERGED_PATCHES)
+        if self.model.config.sampling is not None:
+            warmup_ode_method, warmup_num_steps, warmup_guidance_scale = (
+                self.resolve_sampling_options(
+                    ode_method=None,
+                    num_steps=None,
+                    guidance_scale=None,
+                )
+            )
+        else:
+            warmup_ode_method = "euler"
+            warmup_num_steps = self.WARMUP_NUM_STEPS
+            warmup_guidance_scale = 1.2
         stream = self.model.generate_audio_stream(
             inputs,
             precision=self.precision,
-            ode_method="euler",
-            num_steps=self.WARMUP_NUM_STEPS,
-            guidance_scale=1.2,
+            ode_method=warmup_ode_method,
+            num_steps=warmup_num_steps,
+            guidance_scale=warmup_guidance_scale,
             speaker_scale=1.5,
             eos_threshold=self.WARMUP_EOS_THRESHOLD,
             vocoder_merge_steps=self.vocoder_merge_steps,
@@ -650,6 +662,28 @@ class DotsTtsRuntime:
     # endregion Generation schedule assembly
 
     # region Public generation APIs
+    def resolve_sampling_options(
+        self,
+        *,
+        ode_method: str | None,
+        num_steps: int | None,
+        guidance_scale: float | None,
+    ) -> tuple[str, int, float]:
+        """Apply artifact defaults and reject overrides of locked contracts."""
+
+        sampling = self.model.config.sampling
+        if sampling is not None:
+            return sampling.resolve(
+                ode_method=ode_method,
+                num_steps=num_steps,
+                guidance_scale=guidance_scale,
+            )
+        return (
+            "euler" if ode_method is None else str(ode_method),
+            10 if num_steps is None else int(num_steps),
+            1.2 if guidance_scale is None else float(guidance_scale),
+        )
+
     def generate_stream(
         self,
         *,
@@ -659,13 +693,18 @@ class DotsTtsRuntime:
         template_name: str | None = None,
         language: str | None = None,
         speaker_scale: float = 1.5,
-        ode_method: str = "euler",
-        num_steps: int = 10,
-        guidance_scale: float = 1.2,
+        ode_method: str | None = None,
+        num_steps: int | None = None,
+        guidance_scale: float | None = None,
         normalize_text: bool = False,
         profile_inference: bool = False,
         log_profile_calls: bool = False,
     ) -> Iterator[torch.Tensor]:
+        ode_method, num_steps, guidance_scale = self.resolve_sampling_options(
+            ode_method=ode_method,
+            num_steps=num_steps,
+            guidance_scale=guidance_scale,
+        )
         inputs = self._prepare_inputs(
             text=text,
             prompt_audio_path=prompt_audio_path,
@@ -768,13 +807,18 @@ class DotsTtsRuntime:
         template_name: str | None = None,
         language: str | None = None,
         speaker_scale: float = 1.5,
-        ode_method: str = "euler",
-        num_steps: int = 10,
-        guidance_scale: float = 1.2,
+        ode_method: str | None = None,
+        num_steps: int | None = None,
+        guidance_scale: float | None = None,
         normalize_text: bool = False,
         profile_inference: bool = False,
         log_profile_calls: bool = False,
     ) -> dict[str, Any]:
+        ode_method, num_steps, guidance_scale = self.resolve_sampling_options(
+            ode_method=ode_method,
+            num_steps=num_steps,
+            guidance_scale=guidance_scale,
+        )
         inputs = self._prepare_inputs(
             text=text,
             prompt_audio_path=prompt_audio_path,

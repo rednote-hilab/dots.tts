@@ -48,16 +48,22 @@ def parse_args(argv=None):
         help="Named template preset for generation.",
     )
     parser.add_argument(
-        "--ode-method", type=str, default="euler", help="ODE solver method"
+        "--ode-method",
+        type=str,
+        default=None,
+        help="ODE solver method (default: artifact setting, otherwise euler)",
     )
     parser.add_argument(
-        "--num-steps", type=int, default=10, help="Diffusion sampling steps"
+        "--num-steps",
+        type=int,
+        default=None,
+        help="Sampling steps (default: artifact setting, otherwise 10)",
     )
     parser.add_argument(
         "--guidance-scale",
         type=float,
-        default=1.2,
-        help="Classifier-free guidance scale",
+        default=None,
+        help="Classifier-free guidance scale (default: artifact setting, otherwise 1.2)",
     )
     parser.add_argument(
         "--speaker-scale",

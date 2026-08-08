@@ -16,10 +16,10 @@ import soundfile as sf  # noqa: E402
 import torch  # noqa: E402
 from loguru import logger  # noqa: E402
 
-from dots_tts.utils.logging import configure_logging  # noqa: E402
 from dots_tts.runtime_double_streaming import (  # noqa: E402
     DotsTtsRuntimeDoubleStreaming,
 )
+from dots_tts.utils.logging import configure_logging  # noqa: E402
 from dots_tts.utils.text import normalize_text  # noqa: E402
 from dots_tts.utils.util import seed_everything  # noqa: E402
 
@@ -54,13 +54,22 @@ def parse_args(argv=None):
         default=42,
         help="Random seed.",
     )
-    parser.add_argument("--ode-method", default="euler", help="ODE solver method")
-    parser.add_argument("--num-steps", type=int, default=10, help="Diffusion sampling steps")
+    parser.add_argument(
+        "--ode-method",
+        default=None,
+        help="ODE solver method (default: artifact setting, otherwise euler)",
+    )
+    parser.add_argument(
+        "--num-steps",
+        type=int,
+        default=None,
+        help="Sampling steps (default: artifact setting, otherwise 10)",
+    )
     parser.add_argument(
         "--guidance-scale",
         type=float,
-        default=1.2,
-        help="Classifier-free guidance scale",
+        default=None,
+        help="Classifier-free guidance scale (default: artifact setting, otherwise 1.2)",
     )
     parser.add_argument(
         "--eos-threshold",
