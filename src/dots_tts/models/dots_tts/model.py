@@ -54,10 +54,14 @@ class _GenerateState:
 
 
 @dataclass(frozen=True)
-class _PromptConditioning:
-    prompt_patches: torch.Tensor | None = None
-    prompt_latents: torch.Tensor | None = None
+class _AudioFill:
+    patches: torch.Tensor | None = None
+    latents: torch.Tensor | None = None
     g_cond: torch.Tensor | None = None
+    span_count: int = 0
+    fill_llm: bool = False
+    fill_fm_history: bool = False
+    drop_tail_patch_count: int = 0
 
 
 @dataclass
@@ -83,6 +87,7 @@ class DotsTtsModel(nn.Module):
     VOCODER_FILENAME = "vocoder.safetensors"
     SPEAKER_ENCODER_FILENAME = "speaker_encoder.safetensors"
     _ARTIFACT_ALIASES = (("llm.lm_head.weight", "llm.model.embed_tokens.weight"),)
+    _INFERENCE_UNUSED_CORE_KEYS = frozenset({"input_mask_embedding"})
     REQUIRED_ARTIFACT_FILES = (
         CONFIG_FILENAME,
         LATENT_STATS_FILENAME,
@@ -350,6 +355,14 @@ class DotsTtsModel(nn.Module):
     def _load_artifact_module(cls, module, path: Path):
         state_dict = load_file(path, device="cpu")
         restored_state_dict = cls._restore_artifact_state_dict(state_dict, module)
+        if isinstance(module, DotsTtsCore):
+            for key in cls._INFERENCE_UNUSED_CORE_KEYS:
+                if key in restored_state_dict and key not in module.state_dict():
+                    restored_state_dict.pop(key)
+                    logger.info(
+                        "Ignoring training-only checkpoint key during inference load: {}",
+                        key,
+                    )
         mismatch = module.load_state_dict(restored_state_dict, strict=False)
         if mismatch.missing_keys or mismatch.unexpected_keys:
             raise RuntimeError(f"Failed to load {path}: {mismatch}")
@@ -849,106 +862,182 @@ class DotsTtsModel(nn.Module):
         return int(prompt_sample_count) <= max_input_length
 
     @torch.no_grad()
-    def _prepare_prompt_conditioning(
+    def _prepare_audio_fill(
         self,
-        prompt_audio: torch.Tensor | None,
+        audio: torch.Tensor | None,
         *,
-        use_prompt_prefill: bool,
+        span_count: int = 0,
+        fill_llm: bool,
+        fill_fm_history: bool = False,
+        use_xvector: bool = True,
         speaker_scale: float = 1.5,
-    ) -> _PromptConditioning:
-        if prompt_audio is None:
-            logger.debug(
-                logc(
-                    "conditioning",
-                    "Prompt conditioning skipped: no prompt audio provided.",
-                )
+        drop_tail_patch_count: int = 0,
+    ) -> _AudioFill:
+        if drop_tail_patch_count < 0:
+            raise ValueError("drop_tail_patch_count must be non-negative.")
+        if drop_tail_patch_count > 0 and not fill_llm:
+            raise ValueError("drop_tail_patch_count requires fill_llm=True.")
+        if fill_fm_history and not fill_llm:
+            raise ValueError(
+                "Audio cannot fill FM history without also filling the LLM."
             )
-            return _PromptConditioning()
+        if audio is None:
+            if fill_llm:
+                raise ValueError("Audio is required when an audio fill enters the LLM.")
+            return _AudioFill()
 
-        self.vocoder.eval()
-        self.xvector_extractor.eval()
         device = next(self.core.parameters()).device
-        prompt_audio, cache_key = self._prepare_prompt_audio_for_conditioning(
-            prompt_audio
+        audio, cache_key = self._prepare_prompt_audio_for_conditioning(
+            audio
         )
-        prompt_sample_count = int(prompt_audio.shape[-1])
+        sample_count = int(audio.shape[-1])
         cache_entry = self._get_prompt_feature_cache_entry(cache_key)
         if cache_entry is None:
             cache_entry = _PromptFeatureCacheEntry()
-        prompt_audio = prompt_audio.to(device=device)
+        audio = audio.to(device=device)
 
-        can_cache_speaker = self._can_cache_speaker_embedding(prompt_sample_count)
-        speaker_embedding = (
-            cache_entry.speaker_embedding if can_cache_speaker else None
-        )
-        if speaker_embedding is None:
-            with measure_inference("speaker_encoder", phase="prompt_conditioning"):
-                speaker_embedding = self.xvector_extractor(prompt_audio[None, :])
-            if can_cache_speaker:
-                cache_entry.speaker_embedding = speaker_embedding.detach()
-        else:
-            logger.debug(
-                logc(
-                    "conditioning",
-                    "Prompt speaker cache hit: key={} prompt_samples={}",
-                ),
-                cache_key[:12],
-                prompt_sample_count,
+        g_cond = None
+        if use_xvector:
+            self.xvector_extractor.eval()
+            can_cache_speaker = self._can_cache_speaker_embedding(sample_count)
+            speaker_embedding = (
+                cache_entry.speaker_embedding if can_cache_speaker else None
             )
-        g_cond = self.core.xvec_proj(speaker_embedding * float(speaker_scale))
-        if not use_prompt_prefill:
+            if speaker_embedding is None:
+                with measure_inference(
+                    "speaker_encoder", phase="audio_fill_conditioning"
+                ):
+                    speaker_embedding = self.xvector_extractor(audio[None, :])
+                if can_cache_speaker:
+                    cache_entry.speaker_embedding = speaker_embedding.detach()
+            else:
+                logger.debug(
+                    logc(
+                        "conditioning",
+                        "Audio-fill speaker cache hit: key={} samples={}",
+                    ),
+                    cache_key[:12],
+                    sample_count,
+                )
+            g_cond = self.core.xvec_proj(
+                speaker_embedding * float(speaker_scale)
+            )
+
+        if not fill_llm:
             self._store_prompt_feature_cache_entry(cache_key, cache_entry)
             logger.debug(
                 logc(
                     "conditioning",
-                    "Reference-audio-only conditioning prepared: prompt_samples={} speaker_scale={} device={}",
+                    "Reference-only audio fill prepared: samples={} "
+                    "speaker_scale={} use_xvector={} device={}",
                 ),
-                prompt_sample_count,
+                sample_count,
                 speaker_scale,
+                use_xvector,
                 device,
             )
-            return _PromptConditioning(g_cond=g_cond)
+            return _AudioFill(g_cond=g_cond)
 
-        prompt_latents = cache_entry.prompt_latent_distribution
-        if prompt_latents is None:
-            with measure_inference("latent_encoder", phase="prompt_conditioning"):
-                prompt_latents = self._get_vocoder_inference().extract_latents(
-                    prompt_audio[None, :]
+        self.vocoder.eval()
+        latent_distribution = cache_entry.prompt_latent_distribution
+        if latent_distribution is None:
+            with measure_inference("latent_encoder", phase="audio_fill_conditioning"):
+                latent_distribution = self._get_vocoder_inference().extract_latents(
+                    audio[None, :]
                 )
-            cache_entry.prompt_latent_distribution = prompt_latents.detach()
+            cache_entry.prompt_latent_distribution = latent_distribution.detach()
         else:
             logger.debug(
                 logc(
                     "conditioning",
-                    "Prompt latent cache hit: key={} prompt_samples={}",
+                    "Audio-fill latent cache hit: key={} samples={}",
                 ),
                 cache_key[:12],
-                prompt_sample_count,
+                sample_count,
             )
         self._store_prompt_feature_cache_entry(cache_key, cache_entry)
-        prompt_latents_sampled = self.core.io_helper.sample_from_latent(prompt_latents)
-        prompt_latents_sampled = prompt_latents_sampled[:, : -self.config.patch_size]
-        prompt_patches = rearrange(
-            self.core.io_helper.normalize(prompt_latents_sampled),
+        latents = self.core.io_helper.sample_from_latent(latent_distribution)
+        if drop_tail_patch_count > 0:
+            drop_tail_latent_count = drop_tail_patch_count * self.config.patch_size
+            if drop_tail_latent_count >= latents.size(1):
+                raise ValueError(
+                    "drop_tail_patch_count removes all encoded audio latents: "
+                    f"drop_tail_patch_count={drop_tail_patch_count} "
+                    f"latent_count={latents.size(1)}."
+                )
+            latents = latents[:, :-drop_tail_latent_count]
+        patches = rearrange(
+            self.core.io_helper.normalize(latents),
             "b (s p) d -> b s p d",
             p=self.config.patch_size,
         )
+        encoded_span_count = int(patches.size(1))
+        effective_span_count = (
+            encoded_span_count
+            if span_count <= 0
+            else int(span_count) - drop_tail_patch_count
+        )
+        if effective_span_count <= 0:
+            raise ValueError(
+                "audio_fills effective span count must be positive: "
+                f"span_count={span_count} "
+                f"drop_tail_patch_count={drop_tail_patch_count}."
+            )
+        if effective_span_count != encoded_span_count:
+            raise ValueError(
+                "audio_fills effective span count does not match encoded audio patches: "
+                f"span_count={span_count} "
+                f"drop_tail_patch_count={drop_tail_patch_count} "
+                f"effective={effective_span_count} encoded={encoded_span_count}."
+            )
         logger.debug(
             logc(
                 "conditioning",
-                "Prompt conditioning prepared: prompt_samples={} prompt_patch_count={} "
-                "speaker_scale={} device={}",
+                "Audio fill prepared: samples={} patch_count={} "
+                "speaker_scale={} use_xvector={} device={}",
             ),
-            prompt_sample_count,
-            prompt_patches.size(1),
+            sample_count,
+            encoded_span_count,
             speaker_scale,
+            use_xvector,
             device,
         )
-        return _PromptConditioning(
-            prompt_patches=prompt_patches,
-            prompt_latents=prompt_latents_sampled,
+        return _AudioFill(
+            patches=patches,
+            latents=latents,
             g_cond=g_cond,
+            span_count=effective_span_count,
+            fill_llm=True,
+            fill_fm_history=fill_fm_history,
+            drop_tail_patch_count=drop_tail_patch_count,
         )
+
+    def _build_audio_fills(
+        self,
+        data: dict[str, Any],
+        *,
+        speaker_scale: float,
+    ) -> tuple[list[_AudioFill], torch.Tensor | None]:
+        if "audio_fills" not in data:
+            raise KeyError("generate data must include audio_fills.")
+        audio_fills: list[_AudioFill] = []
+        g_cond: torch.Tensor | None = None
+        for spec in data["audio_fills"]:
+            audio_fill = self._prepare_audio_fill(
+                spec["audio"],
+                span_count=int(spec["span_count"]),
+                fill_llm=bool(spec["fill_llm"]),
+                fill_fm_history=bool(spec["fill_fm_history"]),
+                use_xvector=bool(spec.get("use_xvector", True)),
+                speaker_scale=speaker_scale,
+                drop_tail_patch_count=int(
+                    spec.get("drop_tail_patch_count", 0)
+                ),
+            )
+            if g_cond is None and audio_fill.g_cond is not None:
+                g_cond = audio_fill.g_cond
+            audio_fills.append(audio_fill)
+        return audio_fills, g_cond
 
     def _prepare_patch_encoder_input(
         self,
@@ -966,26 +1055,26 @@ class DotsTtsModel(nn.Module):
             self.core.io_helper.denormalize(latents) if already_normalized else latents
         )
 
-    def _prefill_prompt_latents(
+    def _prefill_audio_latents(
         self,
-        prompt_latents: torch.Tensor | None,
+        latents: torch.Tensor | None,
         *,
         state: _GenerateState,
     ) -> torch.Tensor | None:
-        if prompt_latents is None:
+        if latents is None:
             return None
-        if prompt_latents.size(1) == 0:
-            return prompt_latents.new_zeros(
-                (prompt_latents.size(0), 0, self.core.llm_hidden_size)
+        if latents.size(1) == 0:
+            return latents.new_zeros(
+                (latents.size(0), 0, self.core.llm_hidden_size)
             )
-        patch_encoder_input = self._prepare_patch_encoder_input(prompt_latents)
+        patch_encoder_input = self._prepare_patch_encoder_input(latents)
         state_dtype = (
             state.fm_sequence.dtype
             if state.fm_sequence is not None
             else patch_encoder_input.dtype
         )
         with measure_inference("patch_encoder", phase="prompt_prefill"):
-            prompt_patch_embeddings, state.patch_encoder_state = (
+            patch_embeddings, state.patch_encoder_state = (
                 self._get_patch_encoder_inference().prefill_with_state(
                     patch_encoder_input,
                     state.patch_encoder_state,
@@ -994,7 +1083,7 @@ class DotsTtsModel(nn.Module):
                     dtype=state_dtype,
                 )
             )
-        return prompt_patch_embeddings
+        return patch_embeddings
 
     def _append_to_fm_buffer(
         self,
@@ -1072,11 +1161,11 @@ class DotsTtsModel(nn.Module):
         self,
         *,
         span_positions: torch.Tensor,
-        prompt_patch_count: int,
+        llm_fill_patch_count: int,
     ) -> tuple[int, torch.Tensor]:
-        if span_positions.numel() > prompt_patch_count:
-            return int(span_positions[prompt_patch_count].item()), span_positions[
-                :prompt_patch_count
+        if span_positions.numel() > llm_fill_patch_count:
+            return int(span_positions[llm_fill_patch_count].item()), span_positions[
+                :llm_fill_patch_count
             ]
         raise RuntimeError(
             "Prefill boundary discovery failed despite prior schedule validation."
@@ -1117,25 +1206,39 @@ class DotsTtsModel(nn.Module):
         self,
         generation_schedule: torch.Tensor,
         *,
-        prompt_patch_embeddings: torch.Tensor | None,
-        prompt_span_positions: torch.Tensor,
+        audio_fills: list[_AudioFill],
+        fill_patch_embeddings: list[torch.Tensor | None],
+        fill_span_positions: torch.Tensor,
     ) -> torch.Tensor:
         inputs_embeds = self.core.llm.get_input_embeddings()(
             generation_schedule
         ).clone()
-        if prompt_span_positions.numel() > 0:
-            if prompt_patch_embeddings is None:
+        cursor = 0
+        for audio_fill, patch_embeddings in zip(
+            audio_fills,
+            fill_patch_embeddings,
+            strict=True,
+        ):
+            if not audio_fill.fill_llm:
+                continue
+            span_count = int(audio_fill.span_count)
+            audio_fill_positions = fill_span_positions[cursor : cursor + span_count]
+            cursor += span_count
+            if span_count <= 0:
+                continue
+            if patch_embeddings is None:
                 raise RuntimeError(
-                    "Prompt patch embeddings are required when prefill includes prompt audio spans."
+                    "Patch embeddings are required when an audio fill enters the LLM."
                 )
-            patch_embeddings = prompt_patch_embeddings[
-                :, : prompt_span_positions.numel()
-            ].to(inputs_embeds.dtype)
-            if patch_embeddings.size(1) != prompt_span_positions.numel():
+            segment_embeddings = patch_embeddings[:, :span_count].to(
+                inputs_embeds.dtype
+            )
+            if segment_embeddings.size(1) != span_count:
                 raise RuntimeError(
-                    f"Prompt patch embeddings ({patch_embeddings.size(1)}) do not match prompt span count ({prompt_span_positions.numel()})."
+                    f"Audio fill patch embeddings ({segment_embeddings.size(1)}) "
+                    f"do not match fill span count ({span_count})."
                 )
-            inputs_embeds[:, prompt_span_positions, :] = patch_embeddings
+            inputs_embeds[:, audio_fill_positions, :] = segment_embeddings
         return inputs_embeds
 
     def _prefill(
@@ -1144,23 +1247,30 @@ class DotsTtsModel(nn.Module):
         *,
         state: _GenerateState,
         span_positions: torch.Tensor,
-        prompt_patches: torch.Tensor | None,
-        prompt_patch_embeddings: torch.Tensor | None,
+        audio_fills: list[_AudioFill],
+        fill_patch_embeddings: list[torch.Tensor | None],
         audio_placeholder_ids: set[int],
     ) -> int:
-        prompt_patch_count = (
-            0 if prompt_patches is None else int(prompt_patches.size(1))
+        llm_fill_patch_count = sum(
+            int(audio_fill.span_count)
+            for audio_fill in audio_fills
+            if audio_fill.fill_llm
         )
-        prefill_end, prompt_span_positions = self._locate_prefill_boundary(
-            span_positions=span_positions,
-            prompt_patch_count=prompt_patch_count,
-        )
+        if span_positions.numel() == llm_fill_patch_count:
+            prefill_end = generation_schedule.size(1)
+            fill_span_positions = span_positions
+        else:
+            prefill_end, fill_span_positions = self._locate_prefill_boundary(
+                span_positions=span_positions,
+                llm_fill_patch_count=llm_fill_patch_count,
+            )
         if prefill_end == 0:
             return 0
         inputs_embeds = self._build_prefill_inputs_embeds(
             generation_schedule[:, :prefill_end],
-            prompt_patch_embeddings=prompt_patch_embeddings,
-            prompt_span_positions=prompt_span_positions,
+            audio_fills=audio_fills,
+            fill_patch_embeddings=fill_patch_embeddings,
+            fill_span_positions=fill_span_positions,
         )
         with measure_inference("LLM", phase="prefill"):
             _, llm_hiddens, _logits = self._get_llm_inference().step(
@@ -1173,21 +1283,38 @@ class DotsTtsModel(nn.Module):
         state.llm_hiddens = llm_hiddens[:, -1:, :]
 
         cursor = 0
-        for prompt_index, span_position in enumerate(prompt_span_positions.tolist()):
-            if span_position > cursor:
-                self._append_hidden_chunk(
-                    state, llm_hiddens[:, span_position - 1 : span_position, :]
+        span_cursor = 0
+        for audio_fill in audio_fills:
+            if not audio_fill.fill_llm:
+                continue
+            for audio_fill_patch_index in range(int(audio_fill.span_count)):
+                span_position = int(fill_span_positions[span_cursor].item())
+                span_cursor += 1
+                if not audio_fill.fill_fm_history:
+                    continue
+                if span_position > cursor:
+                    self._append_hidden_chunk(
+                        state, llm_hiddens[:, span_position - 1 : span_position, :]
+                    )
+                patches = audio_fill.patches
+                if patches is None:
+                    raise RuntimeError(
+                        "Audio fill patches are required when filling FM history."
+                    )
+                self._append_history_chunk(
+                    state,
+                    patches[:, audio_fill_patch_index],
                 )
-            self._append_history_chunk(state, prompt_patches[:, prompt_index])
-            if self._next_token_is_audio_span(
-                generation_schedule,
-                position=span_position,
-                audio_placeholder_ids=audio_placeholder_ids,
-            ):
-                self._append_hidden_chunk(
-                    state, llm_hiddens[:, span_position : span_position + 1, :]
-                )
-            cursor = span_position + 1
+                if self._next_token_is_audio_span(
+                    generation_schedule,
+                    position=span_position,
+                    audio_placeholder_ids=audio_placeholder_ids,
+                ):
+                    self._append_hidden_chunk(
+                        state,
+                        llm_hiddens[:, span_position : span_position + 1, :],
+                    )
+                cursor = span_position + 1
         if prefill_end > cursor:
             self._append_hidden_chunk(
                 state, llm_hiddens[:, prefill_end - 1 : prefill_end, :]
@@ -1285,7 +1412,7 @@ class DotsTtsModel(nn.Module):
         num_steps: int,
         guidance_scale: float,
         eos_threshold: float,
-        suppress_first_eos_check: bool = False,
+        suppress_eos_check_count: int = 0,
     ) -> Iterator[torch.Tensor]:
         span_cursor = torch.searchsorted(
             span_positions,
@@ -1300,9 +1427,7 @@ class DotsTtsModel(nn.Module):
             token_id = int(generation_schedule[0, position].item())
             if token_id in audio_placeholder_ids:
                 profile_step = decoded_audio_count + 1
-                should_check_eos = not (
-                    suppress_first_eos_check and decoded_audio_count == 0
-                )
+                should_check_eos = decoded_audio_count >= suppress_eos_check_count
                 stop_after_current_audio = (
                     self._should_stop_after_current_audio(
                         state,
@@ -1397,19 +1522,14 @@ class DotsTtsModel(nn.Module):
                         f"max_sequence_length={max_sequence_length}."
                     )
 
-            use_prompt_prefill = data.get("prompt_audio") is not None and bool(
-                data.get("prompt_text")
-            )
-            prompt_conditioning = self._prepare_prompt_conditioning(
-                data.get("prompt_audio"),
-                use_prompt_prefill=use_prompt_prefill,
+            audio_fills, g_cond = self._build_audio_fills(
+                data,
                 speaker_scale=speaker_scale,
             )
-            has_prompt_prefill = prompt_conditioning.prompt_patches is not None
-            prompt_patch_count = (
-                0
-                if not has_prompt_prefill
-                else int(prompt_conditioning.prompt_patches.size(1))
+            scheduled_fill_patch_count = sum(
+                int(audio_fill.span_count)
+                for audio_fill in audio_fills
+                if audio_fill.fill_llm
             )
             audio_placeholder_ids = set(self.core.audio_span_token_ids)
             span_positions = self._find_audio_span_positions(
@@ -1417,20 +1537,20 @@ class DotsTtsModel(nn.Module):
                 audio_placeholder_ids=audio_placeholder_ids,
             )
             span_count = int(span_positions.numel())
-            minimum_required_spans = prompt_patch_count + 1
+            minimum_required_spans = scheduled_fill_patch_count + 1
             if span_count < minimum_required_spans:
                 raise ValueError(
-                    f"generation_schedule provides {span_count} audio spans, but prompt prefill requires "
-                    f"{prompt_patch_count} spans and generation requires at least one additional decode span."
+                    f"generation_schedule provides {span_count} audio spans, but audio fills require "
+                    f"{scheduled_fill_patch_count} spans and generation requires at least one additional decode span."
                 )
             logger.debug(
                 logc(
                     "decode",
-                    "Latent generation prepared: schedule_audio_spans={} prompt_patch_count={} "
+                    "Latent generation prepared: schedule_audio_spans={} fill_patch_count={} "
                     "minimum_required_spans={}",
                 ),
                 span_count,
-                prompt_patch_count,
+                scheduled_fill_patch_count,
                 minimum_required_spans,
             )
 
@@ -1439,36 +1559,40 @@ class DotsTtsModel(nn.Module):
                 device=device,
                 dtype=dtype,
             )
-            prompt_patch_embeddings = self._prefill_prompt_latents(
-                prompt_conditioning.prompt_latents,
-                state=state,
-            )
+            fill_patch_embeddings = [
+                self._prefill_audio_latents(audio_fill.latents, state=state)
+                if audio_fill.fill_llm
+                else None
+                for audio_fill in audio_fills
+            ]
             position = self._prefill(
                 generation_schedule,
                 state=state,
                 span_positions=span_positions,
-                prompt_patches=prompt_conditioning.prompt_patches,
-                prompt_patch_embeddings=prompt_patch_embeddings,
+                audio_fills=audio_fills,
+                fill_patch_embeddings=fill_patch_embeddings,
                 audio_placeholder_ids=audio_placeholder_ids,
             )
 
+            drop_num_gen_head_patch = int(data.get("drop_num_gen_head_patch", 0))
+            if drop_num_gen_head_patch < 0:
+                raise ValueError("drop_num_gen_head_patch must be non-negative.")
             payload_patch_count = 0
-            should_drop_regenerated_prompt_patch = has_prompt_prefill
             for audio_patch in self._decode(
                 generation_schedule,
                 position=position,
                 state=state,
                 audio_placeholder_ids=audio_placeholder_ids,
                 span_positions=span_positions,
-                g_cond=prompt_conditioning.g_cond,
+                g_cond=g_cond,
                 ode_method=ode_method,
                 num_steps=num_steps,
                 guidance_scale=guidance_scale,
                 eos_threshold=eos_threshold,
-                suppress_first_eos_check=has_prompt_prefill,
+                suppress_eos_check_count=drop_num_gen_head_patch,
             ):
-                if should_drop_regenerated_prompt_patch:
-                    should_drop_regenerated_prompt_patch = False
+                if drop_num_gen_head_patch > 0:
+                    drop_num_gen_head_patch -= 1
                     continue
                 payload_patch_count += 1
                 if payload_patch_count == 1 or payload_patch_count % 10 == 0:
@@ -1482,10 +1606,10 @@ class DotsTtsModel(nn.Module):
                 yield self.core.io_helper.denormalize(audio_patch)
 
             if payload_patch_count == 0:
-                if has_prompt_prefill:
+                if int(data.get("drop_num_gen_head_patch", 0)) > 0:
                     raise RuntimeError(
-                        "Generation produced no payload latents after discarding the regenerated prompt-tail patch. "
-                        "This usually means EOS triggered immediately after prompt continuation "
+                        "Generation produced no payload latents after dropping generated head patches. "
+                        "This usually means EOS triggered immediately after the dropped generation prefix "
                         "or the generation schedule did not provide an effective decode span."
                     )
                 raise RuntimeError(
