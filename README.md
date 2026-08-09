@@ -3,11 +3,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/rednote-hilab/dots.tts"><img src="https://img.shields.io/badge/GitHub-rednote--hilab%2Fdots.tts-blue?logo=github" alt="GitHub"></a>
-  <a href="https://huggingface.co/collections/rednote-hilab/dotstts"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-dots.tts%20collection-yellow" alt="Hugging Face"></a>
+  <a href="https://github.com/studio-dots-ai/dots.tts"><img src="https://img.shields.io/badge/GitHub-studio--dots--ai%2Fdots.tts-blue?logo=github" alt="GitHub"></a>
+  <a href="https://huggingface.co/collections/dots-studio/dotstts"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-dots.tts%20collection-yellow" alt="Hugging Face"></a>
   <a href="https://arxiv.org/abs/2606.07080"><img src="https://img.shields.io/badge/arXiv-Report-b31b1b?logo=arxiv&logoColor=white" alt="arXiv"></a>
-  <a href="https://huggingface.co/spaces/rednote-hilab/dots.tts"><img src="https://img.shields.io/badge/Playground-Live-orange" alt="Playground"></a>
-  <a href="https://rednote-hilab.github.io/dots.tts-demo/"><img src="https://img.shields.io/badge/Demo%20Page-Live-red" alt="Demo Page"></a>
+  <a href="https://huggingface.co/spaces/dots-studio/dots.tts"><img src="https://img.shields.io/badge/Playground-Live-orange" alt="Playground"></a>
+  <a href="https://studio-dots-ai.github.io/dots.tts-demo/"><img src="https://img.shields.io/badge/Demo%20Page-Live-red" alt="Demo Page"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-green" alt="License"></a>
 </p>
 
@@ -72,7 +72,7 @@ pip install dots.tts
 Or from source (for local development / editable install):
 
 ```bash
-git clone https://github.com/rednote-hilab/dots.tts
+git clone https://github.com/studio-dots-ai/dots.tts
 cd dots.tts
 pip install -e . -c constraints/recommended.txt
 ```
@@ -108,11 +108,11 @@ Five pretrained checkpoints are released on Hugging Face. All five share the sam
 
 | Model | Description | Inference settings |
 |---|---|:---:|
-| [`rednote-hilab/dots.tts-base`](https://huggingface.co/rednote-hilab/dots.tts-base) | Pretrained checkpoint. | `10`–`32` (default `10`) |
-| [`rednote-hilab/dots.tts-soar`](https://huggingface.co/rednote-hilab/dots.tts-soar) | Self-corrective-aligned (SCA) checkpoint on top of `dots.tts-base`. Best voice cloning performance. | `10`–`32` (default `10`) |
-| [`rednote-hilab/dots.tts-mf`](https://huggingface.co/rednote-hilab/dots.tts-mf) | MeanFlow-distilled student from `dots.tts-soar`. Not recommended. | NFE `4` |
-| [`rednote-hilab/dots.tts-rl`](https://huggingface.co/rednote-hilab/dots.tts-rl) | Reinforcement-learning post-trained checkpoint. Recommended for one-step inference. | NFE `1` |
-| [`rednote-hilab/dots.tts-scm-2step`](https://huggingface.co/rednote-hilab/dots.tts-scm-2step) | sCM-distilled checkpoint. Recommended for two-step inference. | NFE `2` |
+| [`dots-studio/dots.tts-base`](https://huggingface.co/dots-studio/dots.tts-base) | Pretrained checkpoint. | `10`–`32` (default `10`) |
+| [`dots-studio/dots.tts-soar`](https://huggingface.co/dots-studio/dots.tts-soar) | Self-corrective-aligned (SOAR) checkpoint on top of `dots.tts-base`. Best voice cloning performance. | `10`–`32` (default `10`) |
+| [`dots-studio/dots.tts-mf`](https://huggingface.co/dots-studio/dots.tts-mf) | MeanFlow-distilled student from `dots.tts-soar`. Not recommended. | NFE `4` |
+| [`dots-studio/dots.tts-rl`](https://huggingface.co/dots-studio/dots.tts-rl) | Reinforcement-learning post-trained checkpoint. Recommended for one-step inference. | NFE `1` |
+| [`dots-studio/dots.tts-scm-2step`](https://huggingface.co/dots-studio/dots.tts-scm-2step) | sCM-distilled checkpoint. Recommended for two-step inference. | NFE `2` |
 
 For fast inference, we recommend `dots.tts-rl` for one-step generation or `dots.tts-scm-2step` for two-step generation.
 
@@ -125,7 +125,7 @@ The package installs a `dots.tts` entry point:
 ```bash
 # Continuation voice cloning (reference audio + transcript) — recommended, best SIM
 dots.tts \
-  --model-name-or-path rednote-hilab/dots.tts-soar \
+  --model-name-or-path dots-studio/dots.tts-soar \
   --text "Hello, this is a zero-shot voice cloning demonstration." \
   --prompt-audio /path/to/reference.wav \
   --prompt-text "The exact transcript of the reference audio." \
@@ -134,7 +134,7 @@ dots.tts \
 
 # X-vector-only voice cloning (reference audio only — timbre from speaker x-vector)
 dots.tts \
-  --model-name-or-path rednote-hilab/dots.tts-soar \
+  --model-name-or-path dots-studio/dots.tts-soar \
   --text "Hello, this is a zero-shot voice cloning demonstration." \
   --prompt-audio /path/to/reference.wav \
   --num-steps 10 \
@@ -143,14 +143,14 @@ dots.tts \
 # Random-voice sampling (no reference) — only meaningful with a fine-tuned
 # single-speaker checkpoint
 dots.tts \
-  --model-name-or-path rednote-hilab/dots.tts-soar \
+  --model-name-or-path dots-studio/dots.tts-soar \
   --text "Hello, this is a quick speech synthesis test." \
   --num-steps 10 \
   --output output.wav
 
 # One-step inference with the RL checkpoint
 dots.tts \
-  --model-name-or-path rednote-hilab/dots.tts-rl \
+  --model-name-or-path dots-studio/dots.tts-rl \
   --text "Hello, this is a one-step synthesis test." \
   --prompt-audio /path/to/reference.wav \
   --prompt-text "The exact transcript of the reference audio." \
@@ -161,7 +161,7 @@ dots.tts \
 
 # Two-step inference with the sCM checkpoint
 dots.tts \
-  --model-name-or-path rednote-hilab/dots.tts-scm-2step \
+  --model-name-or-path dots-studio/dots.tts-scm-2step \
   --text "Hello, this is a two-step synthesis test." \
   --prompt-audio /path/to/reference.wav \
   --prompt-text "The exact transcript of the reference audio." \
@@ -193,7 +193,7 @@ from dots_tts.runtime import DotsTtsRuntime
 import soundfile as sf
 
 runtime = DotsTtsRuntime.from_pretrained(
-    "rednote-hilab/dots.tts-soar",
+    "dots-studio/dots.tts-soar",
     precision="bfloat16",
     optimize=True,  # torch.compile acceleration (warmup at load, faster steady-state)
 )
@@ -238,7 +238,7 @@ sf.write("output_stream.wav", audio, runtime.sample_rate)
 
 ```bash
 python apps/gradio/app.py \
-  --model-name-or-path rednote-hilab/dots.tts-soar \
+  --model-name-or-path dots-studio/dots.tts-soar \
   --optimize
 ```
 
@@ -273,7 +273,7 @@ MeanFlow distillation trains a MeanFlow DiT student against a frozen flow-matchi
 To use SOAR as the teacher, download it first:
 
 ```bash
-huggingface-cli download rednote-hilab/dots.tts-soar \
+huggingface-cli download dots-studio/dots.tts-soar \
   --local-dir pretrained_models/dots.tts-soar
 ```
 
@@ -338,7 +338,7 @@ sgl-omni serve \
 | [`dots-studio/dots.tts-soar`](https://huggingface.co/dots-studio/dots.tts-soar) | `examples/configs/dots_tts_soar.yaml` | Flow matching + CFG. Single request at a time (`max_running_requests=1`), `num_steps=10`. |
 | [`dots-studio/dots.tts-base`](https://huggingface.co/dots-studio/dots.tts-base) | `examples/configs/dots_tts_soar.yaml` | Same as SOAR; pass `--model-path dots-studio/dots.tts-base`. |
 
-`rednote-hilab/dots.tts-*` weights are interchangeable via `--model-path`. Use the config file — it enables the compiled acoustic tail / vocoder and backbone decode CUDA graph. Continuous batching is MeanFlow-only.
+`dots-studio/dots.tts-*` weights are interchangeable via `--model-path`. Use the config file — it enables the compiled acoustic tail / vocoder and backbone decode CUDA graph. Continuous batching is MeanFlow-only.
 
 Voice cloning (reference audio + transcript required):
 
@@ -447,19 +447,19 @@ Zero-shot, ~3 s reference prompt, scored by the benchmark's reference ASR and Wa
 | VibeVoice | 1.5B | 3.04 / 68.9 | 1.16 / 74.4 | — | — |
 | VoxCPM 2 | 2B | 1.84 / 75.3 | 0.97 / 79.5 | 8.13 / 75.3 | 3.65 / 76.7 |
 | **dots.tts (Pretrain)** | **2B** | 1.34 / 76.8 | 0.96 / 80.5 | 6.46 / 79.2 | **2.92** / 78.8 |
-| **dots.tts (SCA)** | **2B** | 1.30 / **77.1** | 0.94 / **81.0** | 6.60 / **79.5** | 2.95 / **79.2** |
+| **dots.tts (SOAR)** | **2B** | 1.30 / **77.1** | 0.94 / **81.0** | 6.60 / **79.5** | 2.95 / **79.2** |
 | **dots.tts (MF, NFE=4)** | **2B** | 1.29 / 76.2 | 0.94 / 80.0 | 6.60 / 78.5 | 2.94 / 78.2 |
 | **dots.tts (RL, NFE=1)** | **2B** | 1.49 / 76.5 | 1.06 / 80.2 | 6.54 / 78.2 | 3.03 / 78.3 |
 | **dots.tts (sCM, NFE=2)** | **2B** | 1.49 / 76.5 | 0.97 / 80.3 | 6.53 / 78.8 | 3.00 / 78.5 |
 
 ### MiniMax Multilingual (24 languages)
 
-Per-language WER / SIM on the MiniMax-Speech multilingual test set (100 utterances × 2 reference speakers per language). **Highest average SIM (83.9, SCA)**, with a dots.tts variant taking the per-language SIM lead outright on 19 of 24 languages and tying on 2 more. Content fidelity is on par with the strongest systems on high-resource / Western European splits, and trails on low-resource long-tail languages where SIM is still preserved.
+Per-language WER / SIM on the MiniMax-Speech multilingual test set (100 utterances × 2 reference speakers per language). **Highest average SIM (83.9, SOAR)**, with a dots.tts variant taking the per-language SIM lead outright on 19 of 24 languages and tying on 2 more. Content fidelity is on par with the strongest systems on high-resource / Western European splits, and trails on low-resource long-tail languages where SIM is still preserved.
 
 <details>
 <summary><b>Per-language WER / SIM (click to expand)</b></summary>
 
-| Language | MiniMax | ElevenLabs | Fish-Audio S2 | VoxCPM 2 | **dots.tts (Pre.)** | **dots.tts (SCA)** | **dots.tts (MF$_4$)** |
+| Language | MiniMax | ElevenLabs | Fish-Audio S2 | VoxCPM 2 | **dots.tts (Pre.)** | **dots.tts (SOAR)** | **dots.tts (MF$_4$)** |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | Arabic | **1.67** / 73.6 | **1.67** / 70.6 | 3.50 / 75.0 | 13.05 / **79.1** | 37.91 / 77.5 | 36.19 / **79.1** | 39.65 / 77.6 |
 | Cantonese* | 34.11 / 77.8 | 51.51 / 67.0 | 30.67 / 80.5 | 38.58 / 83.5 | 37.91 / 84.7 | 42.32 / **85.0** | 37.82 / 84.0 |
@@ -493,7 +493,7 @@ Per-language WER / SIM on the MiniMax-Speech multilingual test set (100 utteranc
 
 ### CV3-Eval
 
-Hard-subset Chinese/English plus a cross-lingual voice-cloning split. **Takes the table top on hard-en (MF$_4$ at 4.37) and leads both cross-lingual SIM subsets (SCA at 75.0 / 72.8)**, with the post-trained variants bracketing the prior leader on the hardest English subset.
+Hard-subset Chinese/English plus a cross-lingual voice-cloning split. **Takes the table top on hard-en (MF$_4$ at 4.37) and leads both cross-lingual SIM subsets (SOAR at 75.0 / 72.8)**, with the post-trained variants bracketing the prior leader on the hardest English subset.
 
 | Model | zh W↓ | en W↓ | hard-zh W↓ | hard-en W↓ | en→zh W↓ / S↑ | zh→en W↓ / S↑ |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|
@@ -502,12 +502,12 @@ Hard-subset Chinese/English plus a cross-lingual voice-cloning split. **Takes th
 | Fish-Audio S2 | **2.65** | **2.43** | 9.10 | 4.40 | — | — |
 | VoxCPM 2 | 3.65 | 5.00 | **8.55** | 8.48 | — | — |
 | **dots.tts (Pretrain)** | 3.51 | 5.24 | 9.69 | 5.99 | 10.88 / 74.6 | 4.97 / 71.9 |
-| **dots.tts (SCA)** | 3.71 | 4.50 | 9.22 | 4.49 | 10.75 / **75.0** | 5.66 / **72.8** |
+| **dots.tts (SOAR)** | 3.71 | 4.50 | 9.22 | 4.49 | 10.75 / **75.0** | 5.66 / **72.8** |
 | **dots.tts (MF, NFE=4)** | 3.95 | 4.05 | 9.10 | **4.37** | 10.73 / 73.8 | 5.24 / 70.9 |
 
 ### EmergentTTS-Eval
 
-Win-rate judged head-to-head against `gpt-4o-mini-tts` by Gemini-2.5-Pro-0506 across six expressiveness-oriented scenarios. **SCA takes the top Syntactic Complexity score in the table (65.7%) — above every closed-source system** — and Pretrain posts the **best Emotions score among open-source systems (72.7%)**.
+Win-rate judged head-to-head against `gpt-4o-mini-tts` by Gemini-2.5-Pro-0506 across six expressiveness-oriented scenarios. **SOAR takes the top Syntactic Complexity score in the table (65.7%) — above every closed-source system** — and Pretrain posts the **best Emotions score among open-source systems (72.7%)**.
 
 | Model | Voice | WER↓ | Overall↑ | Emotions↑ | Paraling.↑ | Foreign↑ | C. Pron.↑ | Quest.↑ | Syntax↑ |
 |---|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
@@ -518,7 +518,7 @@ Win-rate judged head-to-head against `gpt-4o-mini-tts` by Gemini-2.5-Pro-0506 ac
 | *baseline: gpt-4o-mini-tts* | Alloy | 10.61 | 50.0% | — | — | — | — | — | — |
 | **dots.tts (Pretrain)** | basic\_ref\_en | 10.86 | 49.2% | 72.7% | 54.7% | 39.5% | 18.0% | 48.4% | 58.4% |
 | **dots.tts (MF4)** | basic\_ref\_en | 11.75 | 47.9% | 59.8% | 55.2% | 36.3% | 16.7% | 50.5% | 64.8% |
-| **dots.tts (SCA)** | basic\_ref\_en | 10.45 | 47.6% | 63.9% | 52.7% | 39.4% | 16.4% | 47.0% | **65.7%** |
+| **dots.tts (SOAR)** | basic\_ref\_en | 10.45 | 47.6% | 63.9% | 52.7% | 39.4% | 16.4% | 47.0% | **65.7%** |
 | Qwen3-TTS | basic\_ref\_en | 17.32 | 42.8% | 39.8% | 50.7% | 25.4% | 30.0% | 48.9% | 60.4% |
 | HumeAI\* | — | 12.85 | 42.7% | 61.6% | 36.9% | 34.6% | 34.3% | 43.2% | 44.6% |
 | Qwen3-TTS | Ryan | 19.65 | 42.3% | 60.5% | 62.7% | 17.1% | 9.8% | 56.4% | 43.0% |
