@@ -34,14 +34,28 @@ def parse_args(argv=None):
         help="Local pretrained directory or Hugging Face repo id",
     )
     parser.add_argument("--text", required=True, help="Input text")
-    parser.add_argument("--output", default="double_streaming.wav", help="Output wav path")
+    parser.add_argument(
+        "--output", default="double_streaming.wav", help="Output wav path"
+    )
     parser.add_argument(
         "--prompt-audio",
         default=None,
         help="Optional reference audio for ref_audio_only speaker conditioning",
     )
-    parser.add_argument("--revision", default=None, help="Optional Hugging Face revision")
-    parser.add_argument("--cache-dir", default=None, help="Optional Hugging Face cache dir")
+    parser.add_argument(
+        "--prompt-text",
+        default=None,
+        help=(
+            "Optional reference audio transcript. When used with --prompt-audio, "
+            "double streaming automatically uses tts_interleave_pair."
+        ),
+    )
+    parser.add_argument(
+        "--revision", default=None, help="Optional Hugging Face revision"
+    )
+    parser.add_argument(
+        "--cache-dir", default=None, help="Optional Hugging Face cache dir"
+    )
     parser.add_argument("--precision", default="bfloat16", help="Inference precision")
     parser.add_argument(
         "--optimize",
@@ -84,6 +98,33 @@ def parse_args(argv=None):
         help="Maximum number of decoded audio patches in double streaming",
     )
     parser.add_argument(
+        "--interleave-mode",
+        choices=("one_to_one", "buffered_ratio"),
+        default=None,
+        help=(
+            "Override online interleave mode. Defaults to the checkpoint training "
+            "config when available, otherwise one_to_one."
+        ),
+    )
+    parser.add_argument(
+        "--initial-lookahead",
+        type=int,
+        default=None,
+        help="Override buffered-ratio first audio text-token lookahead.",
+    )
+    parser.add_argument(
+        "--warmup-ta",
+        type=int,
+        default=None,
+        help="Override buffered-ratio warmup TA steps.",
+    )
+    parser.add_argument(
+        "--ta-per-tta",
+        type=int,
+        default=None,
+        help="Override buffered-ratio steady cycle TA count per TTA step.",
+    )
+    parser.add_argument(
         "--normalize-text",
         action="store_true",
         help="Normalize text before tokenizer encode",
@@ -104,6 +145,8 @@ def main(argv=None):
     configure_logging()
     args = parse_args(argv)
     seed_everything(args.seed)
+    if args.prompt_text and not args.prompt_audio:
+        raise ValueError("--prompt-text requires --prompt-audio.")
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -133,20 +176,34 @@ def main(argv=None):
 
     session = runtime.start_double_streaming(
         prompt_audio_path=args.prompt_audio,
+        prompt_text=args.prompt_text,
         ode_method=args.ode_method,
         num_steps=args.num_steps,
         guidance_scale=args.guidance_scale,
         eos_threshold=args.eos_threshold,
+        interleave_mode=args.interleave_mode,
+        initial_lookahead=args.initial_lookahead,
+        warmup_ta=args.warmup_ta,
+        ta_per_tta=args.ta_per_tta,
+    )
+    logger.info(
+        "Double streaming session: template_name={} interleave_mode={} "
+        "initial_lookahead={} warmup_ta={} ta_per_tta={}",
+        session.template_name,
+        session.interleave_mode,
+        session.initial_lookahead,
+        session.warmup_ta,
+        session.ta_per_tta,
     )
 
     chunks: list[torch.Tensor] = []
     for index, token_id in enumerate(text_token_ids, start=1):
         chunk = session.push_text_token(token_id)
         logger.info(
-            "Double streaming step: token_index={} token_id={} emitted_audio={}",
+            "Double streaming step: token_index={} token_id={} event={}",
             index,
             token_id,
-            chunk is not None,
+            "audio" if chunk is not None else "wait",
         )
         if chunk is not None:
             chunks.append(chunk.detach().cpu())
