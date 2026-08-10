@@ -102,23 +102,9 @@ uv pip install -v -e .
 
 Detailed installation instructions can be found in this [guidance](https://sgl-project.github.io/sglang-omni/get_started/installation.html).
 
-### Checkpoints
-
-Five pretrained checkpoints are released on Hugging Face. All five share the same backbone — choose by the quality / inference-cost tradeoff:
-
-| Model | Description | Inference settings |
-|---|---|:---:|
-| [`dots-studio/dots.tts-base`](https://huggingface.co/dots-studio/dots.tts-base) | Pretrained checkpoint. | `10`–`32` (default `10`) |
-| [`dots-studio/dots.tts-soar`](https://huggingface.co/dots-studio/dots.tts-soar) | SOAR checkpoint on top of `dots.tts-base`. Best voice cloning performance. | `10`–`32` (default `10`) |
-| [`dots-studio/dots.tts-mf`](https://huggingface.co/dots-studio/dots.tts-mf) | MeanFlow-distilled student from `dots.tts-soar`. | NFE `4` |
-| [`dots-studio/dots.tts-mf-2steps`](https://huggingface.co/dots-studio/dots.tts-mf-2steps) | Built on `dots.tts-mf`, with a fixed two-step schedule for exact train–inference alignment and additional training refinements. | NFE `2` |
-| [`dots-studio/dots.tts-mf-1step`](https://huggingface.co/dots-studio/dots.tts-mf-1step) | Also built on `dots.tts-mf`, extending fixed-step training to one-step generation with further training refinements. | NFE `1` |
-
-Pass the repo id directly to `--model-name-or-path` (or `DotsTtsRuntime.from_pretrained`) — the snapshot is fetched on first use and cached locally.
-
 ### CLI
 
-The package installs a `dots.tts` entry point:
+The package installs a `dots.tts` entry point. The examples below use `dots.tts-soar`; replace the model path with any checkpoint in the next section and apply its checkpoint-specific settings.
 
 ```bash
 # Continuation voice cloning (reference audio + transcript) — recommended, best SIM
@@ -127,7 +113,6 @@ dots.tts \
   --text "Hello, this is a zero-shot voice cloning demonstration." \
   --prompt-audio /path/to/reference.wav \
   --prompt-text "The exact transcript of the reference audio." \
-  --num-steps 10 \
   --output clone.wav
 
 # X-vector-only voice cloning (reference audio only — timbre from speaker x-vector)
@@ -135,7 +120,6 @@ dots.tts \
   --model-name-or-path dots-studio/dots.tts-soar \
   --text "Hello, this is a zero-shot voice cloning demonstration." \
   --prompt-audio /path/to/reference.wav \
-  --num-steps 10 \
   --output clone.wav
 
 # Random-voice sampling (no reference) — only meaningful with a fine-tuned
@@ -143,24 +127,7 @@ dots.tts \
 dots.tts \
   --model-name-or-path dots-studio/dots.tts-soar \
   --text "Hello, this is a quick speech synthesis test." \
-  --num-steps 10 \
   --output output.wav
-
-# One-step inference with the MF checkpoint
-dots.tts \
-  --model-name-or-path dots-studio/dots.tts-mf-1step \
-  --text "Hello, this is a one-step synthesis test." \
-  --prompt-audio /path/to/reference.wav \
-  --prompt-text "The exact transcript of the reference audio." \
-  --output mf-1step.wav
-
-# Two-step inference with the MF checkpoint
-dots.tts \
-  --model-name-or-path dots-studio/dots.tts-mf-2steps \
-  --text "Hello, this is a two-step synthesis test." \
-  --prompt-audio /path/to/reference.wav \
-  --prompt-text "The exact transcript of the reference audio." \
-  --output mf-2steps.wav
 ```
 
 Common flags:
@@ -180,6 +147,20 @@ Notes:
 - `--prompt-audio` selects the speaker voice — continuation cloning when paired with `--prompt-text`, x-vector-only cloning when used alone. Omitting `--prompt-audio` falls back to random-voice sampling, which is only meaningful on a fine-tuned single-speaker checkpoint.
 - `--language` is useful for multilingual or code-switched text when you want to force the model-side language tag. For example, pass `--language EN` for English, `--language ZH` for Mandarin, `--language Cantonese` for Cantonese, or `--language auto_detect` to infer the tag from `--text`.
 - Pass either a local model directory or a Hugging Face repo id.
+
+### Checkpoints
+
+Five pretrained checkpoints are released on Hugging Face. All five share the same backbone; choose by the quality / inference-cost tradeoff, then use any of the CLI patterns above.
+
+| Model | Description | Checkpoint-specific settings |
+|---|---|---|
+| [`dots-studio/dots.tts-base`](https://huggingface.co/dots-studio/dots.tts-base) | Pretrained checkpoint. | NFE `10`–`32` (default `10`); CFG defaults to `1.2`. |
+| [`dots-studio/dots.tts-soar`](https://huggingface.co/dots-studio/dots.tts-soar) | SOAR checkpoint on top of `dots.tts-base`. Best voice cloning performance. | NFE `10`–`32` (default `10`); CFG defaults to `1.2`. |
+| [`dots-studio/dots.tts-mf`](https://huggingface.co/dots-studio/dots.tts-mf) | MeanFlow-distilled student from `dots.tts-soar`. | Pass `--num-steps 4`; CFG is fused into the student, so `--guidance-scale` has no effect. |
+| [`dots-studio/dots.tts-mf-2steps`](https://huggingface.co/dots-studio/dots.tts-mf-2steps) | Built on `dots.tts-mf`, with a fixed two-step schedule for exact train–inference alignment and additional training refinements. | Omit sampling options; the artifact supplies its fixed NFE `2` contract. |
+| [`dots-studio/dots.tts-mf-1step`](https://huggingface.co/dots-studio/dots.tts-mf-1step) | Also built on `dots.tts-mf`, extending fixed-step training to one-step generation with further training refinements. | Omit sampling options; the artifact supplies its fixed NFE `1` contract. |
+
+Pass the repo id directly to `--model-name-or-path` or `DotsTtsRuntime.from_pretrained`; the snapshot is fetched on first use and cached locally. Fixed-step artifacts reject incompatible sampling overrides.
 
 ### Python API
 
