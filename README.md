@@ -17,6 +17,8 @@ dots.tts achieves the best average performance on **Seed-TTS-Eval**, with WERs o
 
 ### News
 
+* **[2026.08]** 🔥 We have released **dots.tts.edit** for precise, instruction-controlled speech editing — download the [checkpoint](https://huggingface.co/dots-studio/dots.tts.edit), try the [Playground](https://dots-studio-dots-tts-edit.hf.space/), explore the [Demo Page](https://dots-studio-dots-tts-edit-demo.static.hf.space), and read the [paper](https://arxiv.org/abs/2608.02673).
+
 * **[2026.08]** ⚡ Released `dots.tts-mf-2steps` and `dots.tts-mf-1step` for high-quality voice cloning at just 2 and 1 NFE. Both build on `dots.tts-mf` with fixed-step train–inference alignment. See [Checkpoints](#checkpoints).
 
 * **[2026.08]** 🚀 [SGLang Omni](https://github.com/sgl-project/sglang-omni) now fully supports dots.tts (`mf` / `soar` / `base`) with continuous batching, streaming PCM, and CUDA-graph decode. On Seed-TTS-Eval **EN** (1× H100, `dots.tts-mf`, `num_steps=4`), peak throughput reaches **4.64 req/s** / **19.36 audio_s/s** at concurrency 16 (WER **1.31%**). See [SGLang Omni Usage](#sglang-omni-usage) and the [cookbook](https://sgl-project.github.io/sglang-omni/cookbook/dots_tts.html).
@@ -144,6 +146,30 @@ Common flags:
 
 `dots.tts --help` lists the full set.
 
+Speech editing uses the separate `dots.tts.edit` entry point. Source audio, a
+tagged instruction, and the output path are required. Source and target
+transcripts are optional: when omitted or blank, both are derived from the
+instruction.
+
+```bash
+dots.tts.edit \
+  --model-name-or-path dots-studio/dots.tts.edit \
+  --source-audio /path/to/source.wav \
+  --instruction 'Hello <sub targ="small">brave</sub> world.' \
+  --output edited.wav
+```
+
+Explicit non-empty `--source-text` and `--target-text` values override the
+derived transcripts. Edit speaker guidance defaults to `auto`: it is disabled
+when the instruction contains at least one operation and every operation is
+`emo`, `bg`, or `enhance`, and enabled for text, pitch, rate, pause, speaker
+transfer, or mixed edits. Pass bare `--use-xvector` (or `--use-xvector on`) to
+force it on, and `--use-xvector off` to force it off. TTS speaker guidance
+remains enabled when reference audio is provided. Supported structural tags
+include `<del>`, `<ins>`, `<sub targ="replacement">`, `<emo>`, `<pitch>`,
+`<rate>`, `<enhance>`, `<bg>`, `<pause/>`, and `<spk_transfer/>`. Malformed
+instructions and instructions that derive an empty transcript are rejected.
+
 Notes:
 
 - `--prompt-audio` selects the speaker voice — continuation cloning when paired with `--prompt-text`, x-vector-only cloning when used alone. Omitting `--prompt-audio` falls back to random-voice sampling, which is only meaningful on a fine-tuned single-speaker checkpoint.
@@ -152,7 +178,7 @@ Notes:
 
 ### Checkpoints
 
-Five pretrained checkpoints are released on Hugging Face. All five share the same backbone; choose by the quality / inference-cost tradeoff, then use any of the CLI patterns above.
+Six pretrained checkpoints are released on Hugging Face. They share the same backbone; choose by task and the quality / inference-cost tradeoff, then use the relevant CLI pattern above.
 
 | Model | Description | Checkpoint-specific settings |
 |---|---|---|
@@ -161,6 +187,7 @@ Five pretrained checkpoints are released on Hugging Face. All five share the sam
 | [`dots-studio/dots.tts-mf`](https://huggingface.co/dots-studio/dots.tts-mf) | MeanFlow-distilled student from `dots.tts-soar`. | NFE `4` is recommended. Fewer steps noticeably reduce quality; higher step counts are supported. CFG is fused into the student, so `--guidance-scale` has no effect. |
 | [`dots-studio/dots.tts-mf-2steps`](https://huggingface.co/dots-studio/dots.tts-mf-2steps) | Built on `dots.tts-mf` with a fixed two-step schedule for exact train–inference alignment and additional refinements. Uses the dedicated sCM solver at inference. | Omit sampling options; the artifact selects its fixed NFE `2` sCM contract. |
 | [`dots-studio/dots.tts-mf-1step`](https://huggingface.co/dots-studio/dots.tts-mf-1step) | Also built on `dots.tts-mf`, extending fixed-step training to one-step generation with further training refinements. | Omit sampling options; the artifact supplies its fixed NFE `1` contract. |
+| [`dots-studio/dots.tts.edit`](https://huggingface.co/dots-studio/dots.tts.edit) | Speech editing and zero-shot TTS checkpoint. | NFE `10`–`32` (default `10`); CFG defaults to `1.2`. |
 
 Pass the repo id directly to `--model-name-or-path` or `DotsTtsRuntime.from_pretrained`; the snapshot is fetched on first use and cached locally. Fixed-step artifacts reject incompatible sampling overrides.
 
@@ -189,6 +216,26 @@ sf.write("output.wav", result["audio"].float().cpu().squeeze().numpy(), result["
 
 The fixed-step MeanFlow artifacts read their sampling contracts directly from
 the model configuration, so CLI and Python calls do not need sampling options.
+
+The same edit contract is available from Python:
+
+```python
+from dots_tts.edit_runtime import DotsTtsEditRuntime
+
+edit_runtime = DotsTtsEditRuntime.from_pretrained(
+    "dots-studio/dots.tts.edit",
+    precision="bfloat16",
+)
+result = edit_runtime.generate_edit(
+    source_audio_path="/path/to/source.wav",
+    instruction='Hello <sub targ="small">brave</sub> world.',
+    # source_text and target_text are optional overrides.
+    # use_xvector defaults to "auto"; pass True or False to override it.
+    num_steps=10,
+    guidance_scale=1.2,
+)
+sf.write("edited.wav", result["audio"].float().cpu().squeeze().numpy(), result["sample_rate"])
+```
 
 For low-latency playback or streaming to a client, use `generate_stream` instead — it yields audio chunks (`torch.Tensor`, shape `(1, samples)`) as they are produced. Arguments are identical to `generate`:
 
@@ -221,6 +268,35 @@ python apps/gradio/app.py \
 ```
 
 Defaults to `http://0.0.0.0:7860`. With `--optimize` the first launch runs warmup (slower startup, faster steady-state).
+
+For the local Edit Playground, build the frontend once with Node.js 20+ and
+then launch the application:
+
+```bash
+cd apps/edit_playground/frontend
+npm ci
+npm run build
+cd ../../..
+python apps/edit_playground/app.py \
+  --model-name-or-path dots-studio/dots.tts.edit \
+  --optimize
+```
+
+The Edit Playground ships without voice, edit-source, or noise audio presets;
+upload your own source/reference audio. Optional local transcription requires
+the ASR extra:
+
+```bash
+python -m pip install -e '.[edit_playground_asr]' -c constraints/recommended.txt
+python apps/edit_playground/app.py \
+  --model-name-or-path dots-studio/dots.tts.edit \
+  --asr-model Qwen/Qwen3-ASR-1.7B
+```
+
+The generated `frontend/dist` directory is intentionally not committed. Pass
+`--rebuild-frontend` to install dependencies and rebuild it explicitly during
+launch. See [`apps/edit_playground/README.md`](apps/edit_playground/README.md)
+for the frontend test, build, and local development workflow.
 
 ### Fine-tuning
 
