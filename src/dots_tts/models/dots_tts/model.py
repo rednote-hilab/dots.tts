@@ -1218,7 +1218,7 @@ class DotsTtsModel(nn.Module):
                     num_steps=num_steps,
                     guidance_scale=guidance_scale,
                 )
-            solver_mode = "scm" if sampling is not None else self.core.mode
+            solver_mode = sampling.solver if sampling is not None else self.core.mode
             cfg_sequence = state.fm_cfg_sequence
             if solver_mode == "flow_matching" and cfg_sequence is None:
                 raise RuntimeError("FM cfg static buffer is not initialized.")
