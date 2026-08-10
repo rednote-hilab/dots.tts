@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from dots_tts.config.base import ConfigBase, StrictConfigBase
 from dots_tts.modules.vocoder.config import AudioVAEConfig
@@ -55,11 +55,21 @@ class MeanFlowConfig(ConfigBase):
 
 
 class SamplingConfig(StrictConfigBase):
-    solver: Literal["scm"]
+    solver: Literal["flow_matching", "scm"]
     ode_method: Literal["euler"] = "euler"
-    num_steps: Literal[2] = 2
+    num_steps: Literal[1, 2] = 2
     guidance_scale: Literal[0.0] = 0.0
     tau_mid: float = Field(default=1.3, gt=0.0, lt=math.pi / 2)
+
+    @model_validator(mode="after")
+    def _validate_solver_contract(self) -> "SamplingConfig":
+        expected_num_steps = 1 if self.solver == "flow_matching" else 2
+        if self.num_steps != expected_num_steps:
+            raise ValueError(
+                f"{self.solver} artifact requires num_steps={expected_num_steps}; "
+                f"got num_steps={self.num_steps}."
+            )
+        return self
 
     def resolve(
         self,

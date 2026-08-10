@@ -17,11 +17,13 @@ dots.tts achieves the best average performance on **Seed-TTS-Eval**, with WERs o
 
 ### News
 
+* **[2026.08]** ⚡ Released `dots.tts-mf-2steps` and `dots.tts-mf-1step` for high-quality voice cloning at just 2 and 1 NFE. Both build on `dots.tts-mf` with fixed-step train–inference alignment. See [Checkpoints](#checkpoints).
+
 * **[2026.08]** 🚀 [SGLang Omni](https://github.com/sgl-project/sglang-omni) now fully supports dots.tts (`mf` / `soar` / `base`) with continuous batching, streaming PCM, and CUDA-graph decode. On Seed-TTS-Eval **EN** (1× H100, `dots.tts-mf`, `num_steps=4`), peak throughput reaches **4.64 req/s** / **19.36 audio_s/s** at concurrency 16 (WER **1.31%**). See [SGLang Omni Usage](#sglang-omni-usage) and the [cookbook](https://sgl-project.github.io/sglang-omni/cookbook/dots_tts.html).
 
 * **[2026.07]** 🚀 Shipped a **high-performance inference path** — under `--optimize`, `dots.tts-soar` reaches RTF p50 **0.20 / 0.18** and first-chunk latency **225 ms / 69 ms** (voice cloning / text-only); `dots.tts-mf` reaches **0.15 / 0.13** and **204 ms / 68 ms** respectively. See the [Efficiency](#-efficiency) section for details.
 
-* **[2026.06]** 🔥 We have released **dots.tts** — 2B fully continuous AR TTS, with pretrained / self-corrective-aligned / MeanFlow-distilled checkpoints and full inference & fine-tuning code under Apache-2.0.
+* **[2026.06]** 🔥 We have released **dots.tts** — 2B fully continuous AR TTS, with pretrained / SOAR / MeanFlow-distilled checkpoints and full inference & fine-tuning code under Apache-2.0.
 
 ---
 
@@ -29,8 +31,8 @@ dots.tts achieves the best average performance on **Seed-TTS-Eval**, with WERs o
 
 - [Quick Start](#-quick-start)
   - [Installation](#installation)
-  - [Checkpoints](#checkpoints)
   - [CLI](#cli)
+  - [Checkpoints](#checkpoints)
   - [Python API](#python-api)
   - [Web Demo (Gradio)](#web-demo-gradio)
   - [Fine-tuning](#fine-tuning)
@@ -102,25 +104,9 @@ uv pip install -v -e .
 
 Detailed installation instructions can be found in this [guidance](https://sgl-project.github.io/sglang-omni/get_started/installation.html).
 
-### Checkpoints
-
-Five pretrained checkpoints are released on Hugging Face. All five share the same backbone — choose by the quality / inference-cost tradeoff:
-
-| Model | Description | Inference settings |
-|---|---|:---:|
-| [`dots-studio/dots.tts-base`](https://huggingface.co/dots-studio/dots.tts-base) | Pretrained checkpoint. | `10`–`32` (default `10`) |
-| [`dots-studio/dots.tts-soar`](https://huggingface.co/dots-studio/dots.tts-soar) | Self-corrective-aligned (SOAR) checkpoint on top of `dots.tts-base`. Best voice cloning performance. | `10`–`32` (default `10`) |
-| [`dots-studio/dots.tts-mf`](https://huggingface.co/dots-studio/dots.tts-mf) | MeanFlow-distilled student from `dots.tts-soar`. Not recommended. | NFE `4` |
-| [`dots-studio/dots.tts-rl`](https://huggingface.co/dots-studio/dots.tts-rl) | Reinforcement-learning post-trained checkpoint. Recommended for one-step inference. | NFE `1` |
-| [`dots-studio/dots.tts-scm-2step`](https://huggingface.co/dots-studio/dots.tts-scm-2step) | sCM-distilled checkpoint. Recommended for two-step inference. | NFE `2` |
-
-For fast inference, we recommend `dots.tts-rl` for one-step generation or `dots.tts-scm-2step` for two-step generation.
-
-Pass the repo id directly to `--model-name-or-path` (or `DotsTtsRuntime.from_pretrained`) — the snapshot is fetched on first use and cached locally.
-
 ### CLI
 
-The package installs a `dots.tts` entry point:
+The package installs a `dots.tts` entry point. The examples below use `dots.tts-soar`; replace the model path with any checkpoint in the next section and apply its checkpoint-specific settings.
 
 ```bash
 # Continuation voice cloning (reference audio + transcript) — recommended, best SIM
@@ -129,7 +115,6 @@ dots.tts \
   --text "Hello, this is a zero-shot voice cloning demonstration." \
   --prompt-audio /path/to/reference.wav \
   --prompt-text "The exact transcript of the reference audio." \
-  --num-steps 10 \
   --output clone.wav
 
 # X-vector-only voice cloning (reference audio only — timbre from speaker x-vector)
@@ -137,7 +122,6 @@ dots.tts \
   --model-name-or-path dots-studio/dots.tts-soar \
   --text "Hello, this is a zero-shot voice cloning demonstration." \
   --prompt-audio /path/to/reference.wav \
-  --num-steps 10 \
   --output clone.wav
 
 # Random-voice sampling (no reference) — only meaningful with a fine-tuned
@@ -145,27 +129,7 @@ dots.tts \
 dots.tts \
   --model-name-or-path dots-studio/dots.tts-soar \
   --text "Hello, this is a quick speech synthesis test." \
-  --num-steps 10 \
   --output output.wav
-
-# One-step inference with the RL checkpoint
-dots.tts \
-  --model-name-or-path dots-studio/dots.tts-rl \
-  --text "Hello, this is a one-step synthesis test." \
-  --prompt-audio /path/to/reference.wav \
-  --prompt-text "The exact transcript of the reference audio." \
-  --ode-method euler \
-  --num-steps 1 \
-  --guidance-scale 0 \
-  --output rl.wav
-
-# Two-step inference with the sCM checkpoint
-dots.tts \
-  --model-name-or-path dots-studio/dots.tts-scm-2step \
-  --text "Hello, this is a two-step synthesis test." \
-  --prompt-audio /path/to/reference.wav \
-  --prompt-text "The exact transcript of the reference audio." \
-  --output scm.wav
 ```
 
 Common flags:
@@ -185,6 +149,20 @@ Notes:
 - `--prompt-audio` selects the speaker voice — continuation cloning when paired with `--prompt-text`, x-vector-only cloning when used alone. Omitting `--prompt-audio` falls back to random-voice sampling, which is only meaningful on a fine-tuned single-speaker checkpoint.
 - `--language` is useful for multilingual or code-switched text when you want to force the model-side language tag. For example, pass `--language EN` for English, `--language ZH` for Mandarin, `--language Cantonese` for Cantonese, or `--language auto_detect` to infer the tag from `--text`.
 - Pass either a local model directory or a Hugging Face repo id.
+
+### Checkpoints
+
+Five pretrained checkpoints are released on Hugging Face. All five share the same backbone; choose by the quality / inference-cost tradeoff, then use any of the CLI patterns above.
+
+| Model | Description | Checkpoint-specific settings |
+|---|---|---|
+| [`dots-studio/dots.tts-base`](https://huggingface.co/dots-studio/dots.tts-base) | Pretrained checkpoint. | NFE `10`–`32` (default `10`); CFG defaults to `1.2`. |
+| [`dots-studio/dots.tts-soar`](https://huggingface.co/dots-studio/dots.tts-soar) | SOAR checkpoint on top of `dots.tts-base`. Best voice cloning performance. | NFE `10`–`32` (default `10`); CFG defaults to `1.2`. |
+| [`dots-studio/dots.tts-mf`](https://huggingface.co/dots-studio/dots.tts-mf) | MeanFlow-distilled student from `dots.tts-soar`. | NFE `4` is recommended. Fewer steps noticeably reduce quality; higher step counts are supported. CFG is fused into the student, so `--guidance-scale` has no effect. |
+| [`dots-studio/dots.tts-mf-2steps`](https://huggingface.co/dots-studio/dots.tts-mf-2steps) | Built on `dots.tts-mf` with a fixed two-step schedule for exact train–inference alignment and additional refinements. Uses the dedicated sCM solver at inference. | Omit sampling options; the artifact selects its fixed NFE `2` sCM contract. |
+| [`dots-studio/dots.tts-mf-1step`](https://huggingface.co/dots-studio/dots.tts-mf-1step) | Also built on `dots.tts-mf`, extending fixed-step training to one-step generation with further training refinements. | Omit sampling options; the artifact supplies its fixed NFE `1` contract. |
+
+Pass the repo id directly to `--model-name-or-path` or `DotsTtsRuntime.from_pretrained`; the snapshot is fetched on first use and cached locally. Fixed-step artifacts reject incompatible sampling overrides.
 
 ### Python API
 
@@ -209,8 +187,8 @@ result = runtime.generate(
 sf.write("output.wav", result["audio"].float().cpu().squeeze().numpy(), result["sample_rate"])
 ```
 
-For an sCM artifact, omit `num_steps` and `guidance_scale`; `generate` and
-`generate_stream` read the required two-step/CFG=0 settings from the artifact.
+The fixed-step MeanFlow artifacts read their sampling contracts directly from
+the model configuration, so CLI and Python calls do not need sampling options.
 
 For low-latency playback or streaming to a client, use `generate_stream` instead — it yields audio chunks (`torch.Tensor`, shape `(1, samples)`) as they are produced. Arguments are identical to `generate`:
 
@@ -408,7 +386,7 @@ Solver knobs (`speaker_scale`, `guidance_scale`, `eos_threshold`, `num_steps`, �
 - **`--prompt-text` should match what's actually spoken in the reference audio**. Mismatches degrade stability and may cause word-level errors.
 - **Higher-quality references give better clones** — prefer a high sample rate, low background noise, no trailing noise, and natural-sounding speech.
 - **Try different `--seed` values for prosody variation**. Each seed produces a different rhythm and intonation — resample a few times if the default doesn't feel right.
-- **For flow-matching checkpoints, increase `--num-steps` if quality isn't good enough**. Artifact-locked solvers such as two-step sCM reject incompatible step counts.
+- **For flow-matching checkpoints, increase `--num-steps` if quality isn't good enough**. Fixed-step MeanFlow artifacts reject incompatible sampling overrides.
 - **Force a pronunciation with Pinyin for polyphones.** Replace the character in the input text with its tone-marked pinyin — e.g. write `我生平不hào此道` to force `好` to be read as `hào`. Use tone-marked pinyin only (`hǎo`, `hào`, `bā`); numbered forms like `hao4` or `ha4o` are **not** recognized. Useful when reseeding doesn't fix a polyphone misread.
 
 ---
@@ -449,8 +427,8 @@ Zero-shot, ~3 s reference prompt, scored by the benchmark's reference ASR and Wa
 | **dots.tts (Pretrain)** | **2B** | 1.34 / 76.8 | 0.96 / 80.5 | 6.46 / 79.2 | **2.92** / 78.8 |
 | **dots.tts (SOAR)** | **2B** | 1.30 / **77.1** | 0.94 / **81.0** | 6.60 / **79.5** | 2.95 / **79.2** |
 | **dots.tts (MF, NFE=4)** | **2B** | 1.29 / 76.2 | 0.94 / 80.0 | 6.60 / 78.5 | 2.94 / 78.2 |
-| **dots.tts (RL, NFE=1)** | **2B** | 1.49 / 76.5 | 1.06 / 80.2 | 6.54 / 78.2 | 3.03 / 78.3 |
-| **dots.tts (sCM, NFE=2)** | **2B** | 1.49 / 76.5 | 0.97 / 80.3 | 6.53 / 78.8 | 3.00 / 78.5 |
+| **dots.tts (MF-2steps)** | **2B** | 1.64 / 76.4 | 1.00 / 80.4 | 6.43 / 78.5 | 3.02 / 78.4 |
+| **dots.tts (MF-1step)** | **2B** | 1.59 / 76.6 | 1.02 / 80.2 | 6.63 / 78.1 | 3.08 / 78.3 |
 
 ### MiniMax Multilingual (24 languages)
 
