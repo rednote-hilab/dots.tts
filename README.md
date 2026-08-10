@@ -17,6 +17,8 @@ dots.tts achieves the best average performance on **Seed-TTS-Eval**, with WERs o
 
 ### News
 
+* **[2026.08]** ⚡ Released `dots.tts-mf-2steps` and `dots.tts-mf-1step` for high-quality voice cloning at just 2 and 1 NFE. Both build on `dots.tts-mf` with fixed-step train–inference alignment. See [Checkpoints](#checkpoints).
+
 * **[2026.08]** 🚀 [SGLang Omni](https://github.com/sgl-project/sglang-omni) now fully supports dots.tts (`mf` / `soar` / `base`) with continuous batching, streaming PCM, and CUDA-graph decode. On Seed-TTS-Eval **EN** (1× H100, `dots.tts-mf`, `num_steps=4`), peak throughput reaches **4.64 req/s** / **19.36 audio_s/s** at concurrency 16 (WER **1.31%**). See [SGLang Omni Usage](#sglang-omni-usage) and the [cookbook](https://sgl-project.github.io/sglang-omni/cookbook/dots_tts.html).
 
 * **[2026.07]** 🚀 Shipped a **high-performance inference path** — under `--optimize`, `dots.tts-soar` reaches RTF p50 **0.20 / 0.18** and first-chunk latency **225 ms / 69 ms** (voice cloning / text-only); `dots.tts-mf` reaches **0.15 / 0.13** and **204 ms / 68 ms** respectively. See the [Efficiency](#-efficiency) section for details.
@@ -29,8 +31,8 @@ dots.tts achieves the best average performance on **Seed-TTS-Eval**, with WERs o
 
 - [Quick Start](#-quick-start)
   - [Installation](#installation)
-  - [Checkpoints](#checkpoints)
   - [CLI](#cli)
+  - [Checkpoints](#checkpoints)
   - [Python API](#python-api)
   - [Web Demo (Gradio)](#web-demo-gradio)
   - [Fine-tuning](#fine-tuning)
