@@ -223,7 +223,7 @@ def instruction_operation_tags(instruction: str) -> frozenset[str]:
 
 
 def normalize_edit_xvector_mode(value: object) -> EditXVectorMode:
-    """Validate the Playground bool-or-auto Edit X-vector request contract."""
+    """Validate the public bool-or-auto Edit X-vector request contract."""
 
     if isinstance(value, bool):
         return value
@@ -236,7 +236,7 @@ def resolve_edit_use_xvector(
     mode: EditXVectorMode,
     instruction: str,
 ) -> bool:
-    """Resolve Auto from the complete set of parsed edit operations."""
+    """Resolve an Edit X-vector mode from parsed instruction operations."""
 
     normalized = normalize_edit_xvector_mode(mode)
     if isinstance(normalized, bool):

@@ -197,13 +197,15 @@ dots.tts.edit \
 ```
 
 Explicit non-empty `--source-text` and `--target-text` values override the
-derived transcripts. Edit speaker guidance is disabled by default; pass
-`--use-xvector` to condition the edit on the source speaker embedding. TTS
-speaker guidance remains enabled when reference audio is provided. Supported
-structural tags include `<del>`, `<ins>`, `<sub targ="replacement">`, `<emo>`,
-`<pitch>`, `<rate>`, `<enhance>`, `<bg>`, `<pause/>`, and `<spk_transfer/>`.
-Malformed instructions and instructions that derive an empty transcript are
-rejected.
+derived transcripts. Edit speaker guidance defaults to `auto`: it is disabled
+when the instruction contains at least one operation and every operation is
+`emo`, `bg`, or `enhance`, and enabled for text, pitch, rate, pause, speaker
+transfer, or mixed edits. Pass bare `--use-xvector` (or `--use-xvector on`) to
+force it on, and `--use-xvector off` to force it off. TTS speaker guidance
+remains enabled when reference audio is provided. Supported structural tags
+include `<del>`, `<ins>`, `<sub targ="replacement">`, `<emo>`, `<pitch>`,
+`<rate>`, `<enhance>`, `<bg>`, `<pause/>`, and `<spk_transfer/>`. Malformed
+instructions and instructions that derive an empty transcript are rejected.
 
 Notes:
 
@@ -245,6 +247,7 @@ result = edit_runtime.generate_edit(
     source_audio_path="/path/to/source.wav",
     instruction='Hello <sub targ="small">brave</sub> world.',
     # source_text and target_text are optional overrides.
+    # use_xvector defaults to "auto"; pass True or False to override it.
     num_steps=10,
     guidance_scale=1.2,
 )

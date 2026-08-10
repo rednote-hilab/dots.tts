@@ -246,9 +246,34 @@ def test_runtime_builds_edit_source_audio_fill() -> None:
         "span_count": 2,
         "fill_llm": True,
         "fill_fm_history": False,
-        "use_xvector": False,
+        "use_xvector": True,
         "drop_tail_patch_count": 0,
     }
+
+
+@pytest.mark.parametrize(
+    ("instruction", "mode", "expected"),
+    [
+        ('<emo type="happy">hello</emo>', "auto", False),
+        ('<bg desc="fan">hello</bg>', "auto", False),
+        ("<enhance>hello</enhance>", "auto", False),
+        ('<sub targ="new">old</sub>', "auto", True),
+        ('<sub targ="new">old</sub>', False, False),
+        ('<emo type="happy">hello</emo>', True, True),
+    ],
+)
+def test_runtime_resolves_edit_xvector_mode_before_audio_fill(
+    instruction: str,
+    mode: bool | str,
+    expected: bool,
+) -> None:
+    runtime = make_runtime()
+    inputs = runtime._prepare_edit_inputs(
+        source_audio_path="source.wav",
+        instruction=instruction,
+        use_xvector=mode,
+    )
+    assert inputs["audio_fills"][0]["use_xvector"] is expected
 
 
 def test_runtime_maps_all_tts_prompt_modes_to_audio_fills() -> None:
@@ -367,22 +392,46 @@ def test_disabled_speaker_guidance_skips_xvector_extractor() -> None:
     assert fill.g_cond is None
 
 
-def test_edit_cli_keeps_transcripts_optional_and_guidance_disabled() -> None:
-    args = parse_args(
-        [
-            "--model-name-or-path",
-            "model",
-            "--source-audio",
-            "source.wav",
-            "--instruction",
-            '<sub targ="target">source</sub>',
-            "--output",
-            "edited.wav",
-        ]
-    )
+def _edit_cli_args(*extra: str) -> list[str]:
+    return [
+        "--model-name-or-path",
+        "model",
+        "--source-audio",
+        "source.wav",
+        "--instruction",
+        '<sub targ="target">source</sub>',
+        "--output",
+        "edited.wav",
+        *extra,
+    ]
+
+
+def test_edit_cli_keeps_transcripts_optional_and_defaults_guidance_to_auto() -> None:
+    args = parse_args(_edit_cli_args())
     assert args.source_text is None
     assert args.target_text is None
-    assert args.use_xvector is False
+    assert args.use_xvector == "auto"
     assert args.ode_method is None
     assert args.num_steps is None
     assert args.guidance_scale is None
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        (("--use-xvector",), True),
+        (("--use-xvector", "auto"), "auto"),
+        (("--use-xvector", "on"), True),
+        (("--use-xvector", "off"), False),
+    ],
+)
+def test_edit_cli_accepts_auto_on_off_and_bare_compatibility(
+    extra: tuple[str, ...],
+    expected: bool | str,
+) -> None:
+    assert parse_args(_edit_cli_args(*extra)).use_xvector == expected
+
+
+def test_edit_cli_rejects_unknown_xvector_mode() -> None:
+    with pytest.raises(SystemExit):
+        parse_args(_edit_cli_args("--use-xvector", "true"))

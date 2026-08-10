@@ -4,6 +4,18 @@ import argparse
 from pathlib import Path
 
 
+def _parse_use_xvector(value: str) -> bool | str:
+    if value == "auto":
+        return "auto"
+    if value == "on":
+        return True
+    if value == "off":
+        return False
+    raise argparse.ArgumentTypeError(
+        "--use-xvector must be one of: auto, on, off"
+    )
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="dots.tts.edit inference CLI")
     parser.add_argument("--model-name-or-path", required=True)
@@ -21,8 +33,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--speaker-scale", type=float, default=1.5)
     parser.add_argument(
         "--use-xvector",
-        action="store_true",
-        help="Enable source-speaker guidance (disabled by default for Edit).",
+        nargs="?",
+        const=True,
+        default="auto",
+        type=_parse_use_xvector,
+        metavar="{auto,on,off}",
+        help=(
+            "Source-speaker guidance mode (default: auto). Passing the flag "
+            "without a value forces it on."
+        ),
     )
     parser.add_argument(
         "--ode-method",

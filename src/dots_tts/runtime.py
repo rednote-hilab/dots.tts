@@ -11,7 +11,12 @@ import torch
 from huggingface_hub import snapshot_download
 from loguru import logger
 
-from dots_tts.data.edit_instruction import render_source_text, render_target_text
+from dots_tts.data.edit_instruction import (
+    EditXVectorMode,
+    render_source_text,
+    render_target_text,
+    resolve_edit_use_xvector,
+)
 from dots_tts.data.pipelines.tokenizing import (
     build_edit_generation_schedule,
     build_generation_schedule,
@@ -784,7 +789,7 @@ class DotsTtsRuntime:
         instruction: str,
         source_text: str | None = None,
         target_text: str | None = None,
-        use_xvector: bool = False,
+        use_xvector: EditXVectorMode = "auto",
     ) -> RuntimeInputs:
         (
             resolved_source,
@@ -853,7 +858,10 @@ class DotsTtsRuntime:
                     "span_count": source_patch_count,
                     "fill_llm": True,
                     "fill_fm_history": False,
-                    "use_xvector": bool(use_xvector),
+                    "use_xvector": resolve_edit_use_xvector(
+                        use_xvector,
+                        instruction,
+                    ),
                     "drop_tail_patch_count": 0,
                 }
             ],
@@ -1118,7 +1126,7 @@ class DotsTtsRuntime:
         instruction: str,
         source_text: str | None = None,
         target_text: str | None = None,
-        use_xvector: bool = False,
+        use_xvector: EditXVectorMode = "auto",
         speaker_scale: float = 1.5,
         ode_method: str | None = None,
         num_steps: int | None = None,
