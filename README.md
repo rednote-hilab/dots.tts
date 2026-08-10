@@ -682,7 +682,7 @@ Third-party ports and integrations of dots.tts, maintained by the community.
 
 ## 📖 Citation
 
-If you find dots.tts useful, please consider citing the technical report and starring the repository.
+If you find dots.tts or dots.tts.edit useful, please consider citing the corresponding technical report and starring the repository.
 
 ```bibtex
 @article{dotstts2026,
@@ -690,6 +690,15 @@ If you find dots.tts useful, please consider citing the technical report and sta
   author        = {dots.tts Team},
   year          = {2026},
   eprint        = {2606.07080},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.SD},
+}
+
+@article{wang2026dotsttsedit,
+  title         = {dots.tts.edit: Precisely Controlled Speech Editing with a Continuous Autoregressive Model},
+  author        = {Wang, Hankun and Li, Bohan and Lian, Shi and Gu, Xiaoyu and Peng, Jing and Zheng, Da and Zhang, Colin and Yu, Kai},
+  year          = {2026},
+  eprint        = {2608.02673},
   archivePrefix = {arXiv},
   primaryClass  = {cs.SD},
 }
