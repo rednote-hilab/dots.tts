@@ -17,6 +17,8 @@ dots.tts achieves the best average performance on **Seed-TTS-Eval**, with WERs o
 
 ### News
 
+* **[2026.08]** 🔥 We have released **dots.tts.edit** for precise, instruction-controlled speech editing — try the [Playground](https://huggingface.co/spaces/dots-studio/dots.tts.edit), explore the [Demo Page](https://dots-studio-dots-tts-edit-demo.static.hf.space), and read the [paper](https://arxiv.org/abs/2608.02673).
+
 * **[2026.08]** 🚀 [SGLang Omni](https://github.com/sgl-project/sglang-omni) now fully supports dots.tts (`mf` / `soar` / `base`) with continuous batching, streaming PCM, and CUDA-graph decode. On Seed-TTS-Eval **EN** (1× H100, `dots.tts-mf`, `num_steps=4`), peak throughput reaches **4.64 req/s** / **19.36 audio_s/s** at concurrency 16 (WER **1.31%**). See [SGLang Omni Usage](#sglang-omni-usage) and the [cookbook](https://sgl-project.github.io/sglang-omni/cookbook/dots_tts.html).
 
 * **[2026.07]** 🚀 Shipped a **high-performance inference path** — under `--optimize`, `dots.tts-soar` reaches RTF p50 **0.20 / 0.18** and first-chunk latency **225 ms / 69 ms** (voice cloning / text-only); `dots.tts-mf` reaches **0.15 / 0.13** and **204 ms / 68 ms** respectively. See the [Efficiency](#-efficiency) section for details.
@@ -104,7 +106,7 @@ Detailed installation instructions can be found in this [guidance](https://sgl-p
 
 ### Checkpoints
 
-Five pretrained checkpoints are released on Hugging Face. All five share the same backbone — choose by the quality / inference-cost tradeoff:
+Six checkpoints are available on Hugging Face. They share the same continuous autoregressive backbone; choose by task and inference-cost tradeoff:
 
 | Model | Description | Inference settings |
 |---|---|:---:|
@@ -113,6 +115,7 @@ Five pretrained checkpoints are released on Hugging Face. All five share the sam
 | [`dots-studio/dots.tts-mf`](https://huggingface.co/dots-studio/dots.tts-mf) | MeanFlow-distilled student from `dots.tts-soar`. Not recommended. | NFE `4` |
 | [`dots-studio/dots.tts-rl`](https://huggingface.co/dots-studio/dots.tts-rl) | Reinforcement-learning post-trained checkpoint. Recommended for one-step inference. | NFE `1` |
 | [`dots-studio/dots.tts-scm-2step`](https://huggingface.co/dots-studio/dots.tts-scm-2step) | sCM-distilled checkpoint. Recommended for two-step inference. | NFE `2` |
+| [`dots-studio/dots.tts.edit`](https://huggingface.co/dots-studio/dots.tts.edit) | Speech editing and zero-shot TTS checkpoint. | `10`–`32` (default `10`) |
 
 For fast inference, we recommend `dots.tts-rl` for one-step generation or `dots.tts-scm-2step` for two-step generation.
 
@@ -180,6 +183,30 @@ Common flags:
 
 `dots.tts --help` lists the full set.
 
+Speech editing uses the separate `dots.tts.edit` entry point. Source audio, a
+tagged instruction, and the output path are required. Source and target
+transcripts are optional: when omitted or blank, both are derived from the
+instruction.
+
+```bash
+dots.tts.edit \
+  --model-name-or-path dots-studio/dots.tts.edit \
+  --source-audio /path/to/source.wav \
+  --instruction 'Hello <sub targ="small">brave</sub> world.' \
+  --output edited.wav
+```
+
+Explicit non-empty `--source-text` and `--target-text` values override the
+derived transcripts. Edit speaker guidance defaults to `auto`: it is disabled
+when the instruction contains at least one operation and every operation is
+`emo`, `bg`, or `enhance`, and enabled for text, pitch, rate, pause, speaker
+transfer, or mixed edits. Pass bare `--use-xvector` (or `--use-xvector on`) to
+force it on, and `--use-xvector off` to force it off. TTS speaker guidance
+remains enabled when reference audio is provided. Supported structural tags
+include `<del>`, `<ins>`, `<sub targ="replacement">`, `<emo>`, `<pitch>`,
+`<rate>`, `<enhance>`, `<bg>`, `<pause/>`, and `<spk_transfer/>`. Malformed
+instructions and instructions that derive an empty transcript are rejected.
+
 Notes:
 
 - `--prompt-audio` selects the speaker voice — continuation cloning when paired with `--prompt-text`, x-vector-only cloning when used alone. Omitting `--prompt-audio` falls back to random-voice sampling, which is only meaningful on a fine-tuned single-speaker checkpoint.
@@ -207,6 +234,26 @@ result = runtime.generate(
 )
 
 sf.write("output.wav", result["audio"].float().cpu().squeeze().numpy(), result["sample_rate"])
+```
+
+The same edit contract is available from Python:
+
+```python
+from dots_tts.edit_runtime import DotsTtsEditRuntime
+
+edit_runtime = DotsTtsEditRuntime.from_pretrained(
+    "dots-studio/dots.tts.edit",
+    precision="bfloat16",
+)
+result = edit_runtime.generate_edit(
+    source_audio_path="/path/to/source.wav",
+    instruction='Hello <sub targ="small">brave</sub> world.',
+    # source_text and target_text are optional overrides.
+    # use_xvector defaults to "auto"; pass True or False to override it.
+    num_steps=10,
+    guidance_scale=1.2,
+)
+sf.write("edited.wav", result["audio"].float().cpu().squeeze().numpy(), result["sample_rate"])
 ```
 
 For an sCM artifact, omit `num_steps` and `guidance_scale`; `generate` and
@@ -243,6 +290,35 @@ python apps/gradio/app.py \
 ```
 
 Defaults to `http://0.0.0.0:7860`. With `--optimize` the first launch runs warmup (slower startup, faster steady-state).
+
+For the local Edit Playground, build the frontend once with Node.js 20+ and
+then launch the application:
+
+```bash
+cd apps/edit_playground/frontend
+npm ci
+npm run build
+cd ../../..
+python apps/edit_playground/app.py \
+  --model-name-or-path dots-studio/dots.tts.edit \
+  --optimize
+```
+
+The Edit Playground ships without voice, edit-source, or noise audio presets;
+upload your own source/reference audio. Optional local transcription requires
+the ASR extra:
+
+```bash
+python -m pip install -e '.[edit_playground_asr]' -c constraints/recommended.txt
+python apps/edit_playground/app.py \
+  --model-name-or-path dots-studio/dots.tts.edit \
+  --asr-model Qwen/Qwen3-ASR-1.7B
+```
+
+The generated `frontend/dist` directory is intentionally not committed. Pass
+`--rebuild-frontend` to install dependencies and rebuild it explicitly during
+launch. See [`apps/edit_playground/README.md`](apps/edit_playground/README.md)
+for the frontend test, build, and local development workflow.
 
 ### Fine-tuning
 

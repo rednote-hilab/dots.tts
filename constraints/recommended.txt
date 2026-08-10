@@ -11,8 +11,12 @@ numpy==2.2.6
 pydantic==2.12.5
 PyYAML==6.0.3
 safetensors==0.8.0rc0
+gradio==6.17.0
 
 # Optional `full` extra.
 accelerate==1.12.0
 tensorboard==2.20.0
 ruff==0.15.12
+
+# Optional `edit_playground_asr` extra.
+qwen-asr==0.0.6

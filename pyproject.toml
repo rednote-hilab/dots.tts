@@ -41,7 +41,7 @@ dependencies = [
     "huggingface-hub",
     "loguru",
     "langcodes[data]",
-    "gradio",
+    "gradio>=6.17,<7",
     "einops",
     "librosa>=0.11.0",
     "soundfile>=0.13.1",
@@ -56,6 +56,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+edit_playground_asr = [
+    "qwen-asr==0.0.6",
+]
 full = [
     "accelerate>=1.12.0",
     "tensorboard>=2.20.0",
@@ -64,6 +67,7 @@ full = [
 
 [project.scripts]
 "dots.tts" = "dots_tts.cli:main"
+"dots.tts.edit" = "dots_tts.edit_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/rednote-hilab/dots.tts"
