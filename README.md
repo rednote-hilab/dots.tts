@@ -239,7 +239,9 @@ sf.write("output.wav", result["audio"].float().cpu().squeeze().numpy(), result["
 The same edit contract is available from Python:
 
 ```python
-edit_runtime = DotsTtsRuntime.from_pretrained(
+from dots_tts.edit_runtime import DotsTtsEditRuntime
+
+edit_runtime = DotsTtsEditRuntime.from_pretrained(
     "dots-studio/dots.tts.edit",
     precision="bfloat16",
 )

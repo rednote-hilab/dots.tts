@@ -11,16 +11,7 @@ import torch
 from huggingface_hub import snapshot_download
 from loguru import logger
 
-from dots_tts.data.edit_instruction import (
-    EditXVectorMode,
-    render_source_text,
-    render_target_text,
-    resolve_edit_use_xvector,
-)
-from dots_tts.data.pipelines.tokenizing import (
-    build_edit_generation_schedule,
-    build_generation_schedule,
-)
+from dots_tts.data.pipelines.tokenizing import build_generation_schedule
 from dots_tts.data.pipelines.tts_pipeline import (
     DEFAULT_INSTRUCTION_TTS_TEMPLATE,
     DEFAULT_INTERLEAVE_TRAIN_TEMPLATE,
@@ -28,7 +19,7 @@ from dots_tts.data.pipelines.tts_pipeline import (
     DEFAULT_TRAIN_TEMPLATE,
 )
 from dots_tts.models.dots_tts.model import DotsTtsModel
-from dots_tts.utils.audio import high_quality_resample, prepare_edit_source_audio
+from dots_tts.utils.audio import high_quality_resample
 from dots_tts.utils.logging import categorized_log as logc
 from dots_tts.utils.profiling import (
     InferenceProfiler,
@@ -53,34 +44,15 @@ RUNTIME_TEMPLATE_BY_NAME = {
 RUNTIME_TEMPLATE_NAMES = tuple(sorted(RUNTIME_TEMPLATE_BY_NAME))
 DEFAULT_MAX_SEQUENCE_LENGTH = DotsTtsModel.DEFAULT_MAX_SEQUENCE_LENGTH
 
-EDIT_SOURCE_TEXT_PREFIX = "[原文本]"
-EDIT_SOURCE_AUDIO_PREFIX = "[原语音]"
-EDIT_INSTRUCTION_PREFIX = "[编辑指令]"
-EDIT_TARGET_TEXT_PREFIX = "[编辑文本]"
-EDIT_TARGET_AUDIO_PREFIX = "[编辑后语音]"
-
 
 class RuntimeInputs(TypedDict, total=False):
-    """Prepared generation request passed from the runtime to the model.
-
-    ``generation_schedule`` is int64 with shape ``[1, sequence_length]``.
-    ``audio_fills`` follows the audio-span order in that schedule. Each fill
-    owns mono float audio ``[1, samples]``, its scheduled patch count, and the
-    explicit LLM/FM/speaker/tail-drop behavior used by model prefill.
-    """
-
     fid: str
     language: str
     text: str
     prompt_text: str
     template_name: str
     generation_schedule: torch.Tensor
-    audio_fills: list[dict[str, Any]]
-    drop_num_gen_head_patch: int
-    source_text: str
-    instruction: str
-    source_text_source: str
-    target_text_source: str
+    prompt_audio: torch.Tensor
 
 
 class DotsTtsRuntime:
@@ -438,21 +410,9 @@ class DotsTtsRuntime:
             "prompt_text": prompt_text,
             "template_name": "tts",
             "generation_schedule": schedule.unsqueeze(0),
-            "audio_fills": [],
-            "drop_num_gen_head_patch": 0,
         }
         if prompt_audio is not None:
-            inputs["audio_fills"].append(
-                {
-                    "audio": prompt_audio,
-                    "span_count": int(prompt_patch_count),
-                    "fill_llm": True,
-                    "fill_fm_history": True,
-                    "use_xvector": True,
-                    "drop_tail_patch_count": 1,
-                }
-            )
-            inputs["drop_num_gen_head_patch"] = 1
+            inputs["prompt_audio"] = prompt_audio
         return inputs
 
     # endregion Warmup
@@ -507,30 +467,6 @@ class DotsTtsRuntime:
             prompt_audio.shape[-1],
         )
         return prompt_audio
-
-    def _load_edit_source_audio(self, source_audio_path: str) -> torch.Tensor:
-        """Load and token-align an Edit source waveform."""
-
-        logger.debug(
-            logc("io", "Loading edit source audio: path={}"), source_audio_path
-        )
-        source_audio = prepare_edit_source_audio(
-            source_audio_path,
-            target_sample_rate=self.sample_rate,
-            samples_per_llm_token=int(
-                self.model.config.patch_size * self.model.hop_size
-            ),
-        )
-        logger.debug(
-            logc(
-                "io",
-                "Edit source audio loaded: path={} sample_rate={} samples={}",
-            ),
-            source_audio_path,
-            self.sample_rate,
-            source_audio.shape[-1],
-        )
-        return source_audio
 
     def _resolve_language(
         self,
@@ -597,47 +533,6 @@ class DotsTtsRuntime:
         prompt_samples = int(prompt_audio.shape[-1])
         return (prompt_samples + samples_per_patch - 1) // samples_per_patch
 
-    @staticmethod
-    def _resolve_edit_transcripts(
-        *,
-        instruction: str,
-        source_text: str | None,
-        target_text: str | None,
-    ) -> tuple[str, str, str, str]:
-        if not isinstance(instruction, str) or not instruction.strip():
-            raise ValueError("instruction must be non-empty.")
-
-        # Parse both surfaces even when explicit transcripts are supplied, so
-        # malformed tagged instructions never reach the model.
-        rendered_source = render_source_text(instruction)
-        rendered_target = render_target_text(instruction)
-        explicit_source = source_text if source_text and source_text.strip() else None
-        explicit_target = target_text if target_text and target_text.strip() else None
-        resolved_source = (
-            explicit_source.strip()
-            if explicit_source is not None
-            else rendered_source.strip()
-        )
-        resolved_target = (
-            explicit_target.strip()
-            if explicit_target is not None
-            else rendered_target.strip()
-        )
-        if not resolved_source:
-            raise ValueError(
-                "source_text is missing and instruction renders an empty source transcript."
-            )
-        if not resolved_target:
-            raise ValueError(
-                "target_text is missing and instruction renders an empty target transcript."
-            )
-        return (
-            resolved_source,
-            resolved_target,
-            "request" if explicit_source is not None else "instruction",
-            "request" if explicit_target is not None else "instruction",
-        )
-
     # endregion Request normalization and metadata
 
     # region Generation schedule assembly
@@ -684,7 +579,6 @@ class DotsTtsRuntime:
         template_name: str | None,
         language: str | None = None,
         normalize_text: bool = False,
-        use_xvector: bool = True,
     ) -> RuntimeInputs:
         normalized_template_name = self._normalize_template_name(template_name)
         if prompt_text and not prompt_audio_path:
@@ -713,31 +607,14 @@ class DotsTtsRuntime:
             "text": normalized_text,
             "prompt_text": normalized_prompt_text,
             "template_name": normalized_template_name,
-            "audio_fills": [],
-            "drop_num_gen_head_patch": 0,
         }
 
-        prompt_audio = (
-            self._load_prompt_audio(prompt_audio_path) if prompt_audio_path else None
-        )
+        if prompt_audio_path:
+            inputs["prompt_audio"] = self._load_prompt_audio(prompt_audio_path)
         prompt_audio_patch_count = self._estimate_prompt_audio_patch_count(
-            prompt_audio=prompt_audio,
+            prompt_audio=inputs.get("prompt_audio"),
             prompt_text=normalized_prompt_text,
         )
-        if prompt_audio is not None:
-            has_prompt_text = bool(normalized_prompt_text)
-            inputs["audio_fills"].append(
-                {
-                    "audio": prompt_audio,
-                    "span_count": prompt_audio_patch_count,
-                    "fill_llm": has_prompt_text,
-                    "fill_fm_history": has_prompt_text,
-                    "use_xvector": bool(use_xvector),
-                    "drop_tail_patch_count": 1 if has_prompt_text else 0,
-                }
-            )
-            if has_prompt_text:
-                inputs["drop_num_gen_head_patch"] = 1
         if (
             prompt_audio_patch_count > 0
             and self.max_generate_length <= prompt_audio_patch_count
@@ -782,95 +659,6 @@ class DotsTtsRuntime:
         )
         return inputs
 
-    def _prepare_edit_inputs(
-        self,
-        *,
-        source_audio_path: str,
-        instruction: str,
-        source_text: str | None = None,
-        target_text: str | None = None,
-        use_xvector: EditXVectorMode = "auto",
-    ) -> RuntimeInputs:
-        (
-            resolved_source,
-            resolved_target,
-            source_text_source,
-            target_text_source,
-        ) = self._resolve_edit_transcripts(
-            instruction=instruction,
-            source_text=source_text,
-            target_text=target_text,
-        )
-        source_audio = self._load_edit_source_audio(source_audio_path)
-        source_patch_count = self._estimate_prompt_audio_patch_count(
-            prompt_audio=source_audio,
-            prompt_text=resolved_source,
-        )
-        if self.max_generate_length <= source_patch_count:
-            raise ValueError(
-                "max_generate_length must exceed edit source audio patch count: "
-                f"max_generate_length={self.max_generate_length} "
-                f"source_audio_patch_count={source_patch_count}."
-            )
-        schedule_spec = build_edit_generation_schedule(
-            source_text=resolved_source,
-            target_text=resolved_target,
-            instruction=instruction,
-            tokenizer=self.model.tokenizer,
-            source_text_prefix=EDIT_SOURCE_TEXT_PREFIX,
-            source_audio_prefix=EDIT_SOURCE_AUDIO_PREFIX,
-            instruction_prefix=EDIT_INSTRUCTION_PREFIX,
-            target_text_prefix=EDIT_TARGET_TEXT_PREFIX,
-            target_audio_prefix=EDIT_TARGET_AUDIO_PREFIX,
-            source_num_audio_tokens=source_patch_count,
-            target_max_audio_tokens=self.max_generate_length - source_patch_count,
-        )
-        schedule = torch.tensor(
-            schedule_spec["schedule_ids"],
-            dtype=torch.long,
-            device=self.device,
-        )
-        self._validate_generation_schedule_length(schedule.numel())
-        request_payload = {
-            "source_audio_path": source_audio_path,
-            "source_text": resolved_source,
-            "target_text": resolved_target,
-            "instruction": instruction,
-        }
-        request_id = hashlib.sha1(
-            json.dumps(
-                request_payload,
-                ensure_ascii=False,
-                sort_keys=True,
-            ).encode("utf-8")
-        ).hexdigest()[:16]
-        return {
-            "fid": request_id,
-            "language": "",
-            "text": resolved_target,
-            "source_text": resolved_source,
-            "prompt_text": resolved_source,
-            "instruction": instruction,
-            "template_name": "edit",
-            "audio_fills": [
-                {
-                    "audio": source_audio,
-                    "span_count": source_patch_count,
-                    "fill_llm": True,
-                    "fill_fm_history": False,
-                    "use_xvector": resolve_edit_use_xvector(
-                        use_xvector,
-                        instruction,
-                    ),
-                    "drop_tail_patch_count": 0,
-                }
-            ],
-            "drop_num_gen_head_patch": 0,
-            "source_text_source": source_text_source,
-            "target_text_source": target_text_source,
-            "generation_schedule": schedule.unsqueeze(0),
-        }
-
     # endregion Generation schedule assembly
 
     # region Public generation APIs
@@ -909,7 +697,6 @@ class DotsTtsRuntime:
         num_steps: int | None = None,
         guidance_scale: float | None = None,
         normalize_text: bool = False,
-        use_xvector: bool = True,
         profile_inference: bool = False,
         log_profile_calls: bool = False,
     ) -> Iterator[torch.Tensor]:
@@ -925,7 +712,6 @@ class DotsTtsRuntime:
             template_name=template_name,
             language=language,
             normalize_text=normalize_text,
-            use_xvector=use_xvector,
         )
         profile_inference = bool(profile_inference or log_profile_calls)
         logger.debug(
@@ -1025,7 +811,6 @@ class DotsTtsRuntime:
         num_steps: int | None = None,
         guidance_scale: float | None = None,
         normalize_text: bool = False,
-        use_xvector: bool = True,
         profile_inference: bool = False,
         log_profile_calls: bool = False,
     ) -> dict[str, Any]:
@@ -1041,7 +826,6 @@ class DotsTtsRuntime:
             template_name=template_name,
             language=language,
             normalize_text=normalize_text,
-            use_xvector=use_xvector,
         )
         profile_inference = bool(profile_inference or log_profile_calls)
         logger.debug(
@@ -1117,85 +901,6 @@ class DotsTtsRuntime:
             "time_used": time_used,
             "rtf": rtf,
             "profiling": profiling,
-        }
-
-    def generate_edit(
-        self,
-        *,
-        source_audio_path: str,
-        instruction: str,
-        source_text: str | None = None,
-        target_text: str | None = None,
-        use_xvector: EditXVectorMode = "auto",
-        speaker_scale: float = 1.5,
-        ode_method: str | None = None,
-        num_steps: int | None = None,
-        guidance_scale: float | None = None,
-        profile_inference: bool = False,
-        log_profile_calls: bool = False,
-    ) -> dict[str, Any]:
-        ode_method, num_steps, guidance_scale = self.resolve_sampling_options(
-            ode_method=ode_method,
-            num_steps=num_steps,
-            guidance_scale=guidance_scale,
-        )
-        inputs = self._prepare_edit_inputs(
-            source_audio_path=source_audio_path,
-            instruction=instruction,
-            source_text=source_text,
-            target_text=target_text,
-            use_xvector=use_xvector,
-        )
-        profile_inference = bool(profile_inference or log_profile_calls)
-        start_time = time.time()
-        profiling = None
-        try:
-            with inference_profiling(
-                enabled=profile_inference,
-                device=self.device,
-                log_calls=True if log_profile_calls else None,
-                request_id=inputs["fid"],
-            ) as profiler:
-                audio = self.model.generate_audio(
-                    inputs,
-                    precision=self.precision,
-                    ode_method=ode_method,
-                    num_steps=num_steps,
-                    guidance_scale=guidance_scale,
-                    speaker_scale=speaker_scale,
-                )
-        except Exception:
-            logger.exception(
-                logc("request", "Edit generation failed: request_id={}"),
-                inputs["fid"],
-            )
-            raise
-        time_used = time.time() - start_time
-        duration_seconds = audio.shape[-1] / self.sample_rate
-        if profiler is not None:
-            profiling = profiler.summary(duration_seconds=duration_seconds)
-            log_inference_profile(
-                request_id=inputs["fid"],
-                profiling=profiling,
-                duration_seconds=duration_seconds,
-            )
-        return {
-            "fid": inputs["fid"],
-            "request_id": inputs["fid"],
-            "audio": audio,
-            "sample_rate": self.sample_rate,
-            "duration_seconds": duration_seconds,
-            "time_used": time_used,
-            "rtf": (
-                time_used / duration_seconds
-                if duration_seconds > 0
-                else float("inf")
-            ),
-            "profiling": profiling,
-            "source_text": inputs["source_text"],
-            "target_text": inputs["text"],
-            "source_text_source": inputs["source_text_source"],
-            "target_text_source": inputs["target_text_source"],
         }
 
     # endregion Public generation APIs

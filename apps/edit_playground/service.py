@@ -40,7 +40,7 @@ from dots_tts.data.edit_instruction import (
     normalize_edit_xvector_mode,
     resolve_edit_use_xvector,
 )
-from dots_tts.runtime import DotsTtsRuntime
+from dots_tts.edit_runtime import DotsTtsEditRuntime
 from dots_tts.utils.util import seed_everything
 
 
@@ -240,8 +240,10 @@ class GenerationResult:
     compiled_edit: CompiledEdit | None = None
 
 
-def _default_runtime_factory(model_name_or_path: str, **kwargs: Any) -> DotsTtsRuntime:
-    return DotsTtsRuntime.from_pretrained(model_name_or_path, **kwargs)
+def _default_runtime_factory(
+    model_name_or_path: str, **kwargs: Any
+) -> DotsTtsEditRuntime:
+    return DotsTtsEditRuntime.from_pretrained(model_name_or_path, **kwargs)
 
 
 def _safe_session_id(session_id: str) -> str:

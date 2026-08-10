@@ -69,11 +69,11 @@ def main(argv: list[str] | None = None) -> None:
 
     import soundfile as sf
 
-    from dots_tts.runtime import DotsTtsRuntime
+    from dots_tts.edit_runtime import DotsTtsEditRuntime
     from dots_tts.utils.util import seed_everything
 
     seed_everything(args.seed)
-    runtime = DotsTtsRuntime.from_pretrained(
+    runtime = DotsTtsEditRuntime.from_pretrained(
         args.model_name_or_path,
         revision=args.revision,
         cache_dir=args.cache_dir,

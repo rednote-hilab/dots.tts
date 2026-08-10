@@ -17,9 +17,9 @@ from dots_tts.data.edit_instruction import (
 )
 from dots_tts.data.pipelines.tokenizing import build_edit_generation_schedule
 from dots_tts.edit_cli import parse_args
-from dots_tts.models.dots_tts import model as model_module
-from dots_tts.models.dots_tts.model import DotsTtsModel
-from dots_tts.runtime import DotsTtsRuntime
+from dots_tts.edit_runtime import DotsTtsEditRuntime
+from dots_tts.models.dots_tts import edit_model as edit_model_module
+from dots_tts.models.dots_tts.edit_model import DotsTtsEditModel
 from dots_tts.utils.audio import prepare_edit_source_audio
 from dots_tts.utils.tokenizer import (
     AUDIO_GEN_END_TOKEN,
@@ -54,8 +54,8 @@ class DummyTokenizer:
         return self._special.get(token, -1)
 
 
-def make_runtime() -> DotsTtsRuntime:
-    runtime = object.__new__(DotsTtsRuntime)
+def make_runtime() -> DotsTtsEditRuntime:
+    runtime = object.__new__(DotsTtsEditRuntime)
     runtime.device = torch.device("cpu")
     runtime.sample_rate = 16
     runtime.precision = "fp32"
@@ -82,7 +82,7 @@ def test_inference_load_ignores_only_training_input_mask_embedding(
             super().__init__()
             self.weight = torch.nn.Parameter(torch.zeros(2))
 
-    monkeypatch.setattr(model_module, "DotsTtsCore", DummyCore)
+    monkeypatch.setattr(edit_model_module, "DotsTtsCore", DummyCore)
     artifact = tmp_path / "model.safetensors"
     save_file(
         {
@@ -92,7 +92,7 @@ def test_inference_load_ignores_only_training_input_mask_embedding(
         artifact,
     )
     core = DummyCore()
-    DotsTtsModel._load_artifact_module(core, artifact)
+    DotsTtsEditModel._load_artifact_module(core, artifact)
     torch.testing.assert_close(core.weight, torch.ones(2))
 
     save_file(
@@ -100,7 +100,7 @@ def test_inference_load_ignores_only_training_input_mask_embedding(
         artifact,
     )
     with pytest.raises(RuntimeError, match="unrelated_training_key"):
-        DotsTtsModel._load_artifact_module(DummyCore(), artifact)
+        DotsTtsEditModel._load_artifact_module(DummyCore(), artifact)
 
 
 def test_instruction_renders_both_transcripts() -> None:
@@ -145,12 +145,12 @@ def test_explicit_edit_xvector_mode_remains_boolean() -> None:
 
 def test_optional_transcripts_override_or_fall_back_to_instruction() -> None:
     instruction = '<sub targ="target">source</sub>'
-    assert DotsTtsRuntime._resolve_edit_transcripts(
+    assert DotsTtsEditRuntime._resolve_edit_transcripts(
         instruction=instruction,
         source_text=" explicit source ",
         target_text=" explicit target ",
     ) == ("explicit source", "explicit target", "request", "request")
-    assert DotsTtsRuntime._resolve_edit_transcripts(
+    assert DotsTtsEditRuntime._resolve_edit_transcripts(
         instruction=instruction,
         source_text=" ",
         target_text=None,
@@ -169,7 +169,7 @@ def test_empty_rendered_transcript_is_rejected(
     message: str,
 ) -> None:
     with pytest.raises(ValueError, match=message):
-        DotsTtsRuntime._resolve_edit_transcripts(
+        DotsTtsEditRuntime._resolve_edit_transcripts(
             instruction=instruction,
             source_text=None,
             target_text=None,
@@ -283,7 +283,7 @@ def test_runtime_maps_all_tts_prompt_modes_to_audio_fills() -> None:
         runtime,
     )
 
-    text_only = runtime._prepare_inputs(
+    text_only = runtime._prepare_audio_fill_tts_inputs(
         text="hello",
         prompt_audio_path=None,
         prompt_text=None,
@@ -292,7 +292,7 @@ def test_runtime_maps_all_tts_prompt_modes_to_audio_fills() -> None:
     assert text_only["audio_fills"] == []
     assert text_only["drop_num_gen_head_patch"] == 0
 
-    speaker_only = runtime._prepare_inputs(
+    speaker_only = runtime._prepare_audio_fill_tts_inputs(
         text="hello",
         prompt_audio_path="speaker.wav",
         prompt_text=None,
@@ -303,7 +303,7 @@ def test_runtime_maps_all_tts_prompt_modes_to_audio_fills() -> None:
     assert speaker_fill["fill_llm"] is False
     assert speaker_fill["use_xvector"] is True
 
-    continuation = runtime._prepare_inputs(
+    continuation = runtime._prepare_audio_fill_tts_inputs(
         text="world",
         prompt_audio_path="speaker.wav",
         prompt_text="hello",
@@ -318,7 +318,7 @@ def test_runtime_maps_all_tts_prompt_modes_to_audio_fills() -> None:
 
 
 def test_edit_source_prefill_does_not_enter_fm_history() -> None:
-    model = object.__new__(DotsTtsModel)
+    model = object.__new__(DotsTtsEditModel)
     torch.nn.Module.__init__(model)
     model._llm_max_sequence_length = 2048
     llm_hiddens = torch.arange(12, dtype=torch.float32).reshape(1, 3, 4)
@@ -329,7 +329,7 @@ def test_edit_source_prefill_does_not_enter_fm_history() -> None:
         ),
         model,
     )
-    model._build_prefill_inputs_embeds = MethodType(
+    model._build_edit_prefill_inputs_embeds = MethodType(
         lambda self, *_args, **_kwargs: torch.zeros((1, 3, 4)),
         model,
     )
@@ -346,7 +346,7 @@ def test_edit_source_prefill_does_not_enter_fm_history() -> None:
     )
     state = SimpleNamespace(llm_state=object(), llm_hiddens=None)
 
-    position = model._prefill(
+    position = model._prefill_edit_audio_fills(
         torch.tensor([[1, 2, 2, 2]]),
         state=state,
         span_positions=torch.tensor([1, 2, 3]),
@@ -374,7 +374,7 @@ def test_disabled_speaker_guidance_skips_xvector_extractor() -> None:
         def __call__(self, _audio: torch.Tensor) -> torch.Tensor:
             raise AssertionError("speaker encoder should be skipped")
 
-    model = object.__new__(DotsTtsModel)
+    model = object.__new__(DotsTtsEditModel)
     torch.nn.Module.__init__(model)
     model.core = torch.nn.Linear(1, 1)
     model.xvector_extractor = XVectorExtractor()
