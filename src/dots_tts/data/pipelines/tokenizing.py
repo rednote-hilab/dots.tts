@@ -287,6 +287,54 @@ def build_generation_schedule(
     }
 
 
+def build_edit_generation_schedule(
+    *,
+    source_text: str,
+    target_text: str,
+    instruction: str,
+    tokenizer,
+    source_text_prefix: str,
+    source_audio_prefix: str,
+    instruction_prefix: str,
+    target_text_prefix: str,
+    target_audio_prefix: str,
+    source_num_audio_tokens: int,
+    target_max_audio_tokens: int,
+) -> dict[str, Any]:
+    """Build the complete source-prefill and target-decode Edit schedule."""
+
+    if source_num_audio_tokens <= 0:
+        raise ValueError("source_num_audio_tokens must be positive.")
+    if target_max_audio_tokens <= 0:
+        raise ValueError("target_max_audio_tokens must be positive.")
+
+    gen_start = require_token_id(tokenizer, AUDIO_GEN_START_TOKEN)
+    gen_span = require_token_id(tokenizer, AUDIO_GEN_SPAN_TOKEN)
+    gen_end = require_token_id(tokenizer, AUDIO_GEN_END_TOKEN)
+    schedule_ids: list[int] = []
+
+    def append_text(prefix: str, value: str) -> None:
+        schedule_ids.extend(tokenizer.encode(prefix, add_special_tokens=False))
+        schedule_ids.extend(tokenizer.encode(value, add_special_tokens=False))
+
+    append_text(source_text_prefix, source_text)
+    schedule_ids.extend(
+        tokenizer.encode(source_audio_prefix, add_special_tokens=False)
+    )
+    schedule_ids.extend(
+        [gen_start, *([gen_span] * source_num_audio_tokens), gen_end]
+    )
+    append_text(instruction_prefix, instruction)
+    append_text(target_text_prefix, target_text)
+    schedule_ids.extend(
+        tokenizer.encode(target_audio_prefix, add_special_tokens=False)
+    )
+    schedule_ids.append(gen_start)
+    schedule_ids.extend([gen_span] * target_max_audio_tokens)
+    schedule_ids.append(gen_end)
+    return {"schedule_ids": schedule_ids, "interleave": False}
+
+
 def _append_interleave_generation_tokens(
     *,
     full_ids: list[int],
