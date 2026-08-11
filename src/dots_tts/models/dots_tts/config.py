@@ -95,6 +95,25 @@ class SamplingConfig(StrictConfigBase):
         return resolved
 
 
+class StreamingConfig(StrictConfigBase):
+    interleave_mode: Literal["one_to_one", "buffered_ratio"] = "one_to_one"
+    initial_lookahead: int | None = None
+    ta_per_tta: int = 2
+    warmup_ta: int = 1
+
+    @model_validator(mode="after")
+    def _validate_streaming_contract(self) -> "StreamingConfig":
+        if self.interleave_mode == "one_to_one":
+            return self
+        if self.initial_lookahead is not None and self.initial_lookahead <= 0:
+            raise ValueError("initial_lookahead must be positive.")
+        if self.ta_per_tta <= 0:
+            raise ValueError("ta_per_tta must be positive for buffered_ratio.")
+        if self.warmup_ta < 0:
+            raise ValueError("warmup_ta must be non-negative.")
+        return self
+
+
 class ModelConfig(ConfigBase):
     model_type: str = "dots_tts"
     latent_dim: int
@@ -109,6 +128,7 @@ class ModelConfig(ConfigBase):
     xvec_max_audio_seconds: float = 10.0
     meanflow: MeanFlowConfig | None = None
     sampling: SamplingConfig | None = None
+    streaming: StreamingConfig | None = None
 
 
 __all__ = [
@@ -116,4 +136,5 @@ __all__ = [
     "MeanFlowConfig",
     "ModelConfig",
     "SamplingConfig",
+    "StreamingConfig",
 ]
