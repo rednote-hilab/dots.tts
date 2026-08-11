@@ -187,19 +187,19 @@ Notes:
 
 ### Checkpoints
 
-Seven pretrained checkpoints are released on Hugging Face. They share the same backbone; choose by task and the quality / inference-cost tradeoff, then use the relevant CLI pattern above.
+Seven pretrained checkpoints are released on Hugging Face. They share the same backbone; choose by task and runtime entry point.
 
-| Model | Description | Checkpoint-specific settings |
-|---|---|---|
-| [`dots-studio/dots.tts-base`](https://huggingface.co/dots-studio/dots.tts-base) | Pretrained checkpoint. | NFE `10`–`32` (default `10`); CFG defaults to `1.2`. |
-| [`dots-studio/dots.tts-soar`](https://huggingface.co/dots-studio/dots.tts-soar) | SOAR checkpoint on top of `dots.tts-base`. Best voice cloning performance. | NFE `10`–`32` (default `10`); CFG defaults to `1.2`. |
-| [`dots-studio/dots.tts-mf`](https://huggingface.co/dots-studio/dots.tts-mf) | MeanFlow-distilled student from `dots.tts-soar`. | NFE `4` is recommended. Fewer steps noticeably reduce quality; higher step counts are supported. CFG is fused into the student, so `--guidance-scale` has no effect. |
-| [`dots-studio/dots.tts-mf-2steps`](https://huggingface.co/dots-studio/dots.tts-mf-2steps) | Built on `dots.tts-mf` with a fixed two-step schedule for exact train–inference alignment and additional refinements. Uses the dedicated sCM solver at inference. | Omit sampling options; the artifact selects its fixed NFE `2` sCM contract. |
-| [`dots-studio/dots.tts-mf-1step`](https://huggingface.co/dots-studio/dots.tts-mf-1step) | Also built on `dots.tts-mf`, extending fixed-step training to one-step generation with further training refinements. | Omit sampling options; the artifact supplies its fixed NFE `1` contract. |
-| [`dots-studio/dots.tts-mf-2steps-stts`](https://huggingface.co/dots-studio/dots.tts-mf-2steps-stts) | Streaming-TTS checkpoint built for double-streaming use. It uses the same fixed two-step sCM sampling contract as MF-2steps. | Omit sampling options; the artifact selects its fixed NFE `2` sCM contract and streaming cadence. |
-| [`dots-studio/dots.tts.edit`](https://huggingface.co/dots-studio/dots.tts.edit) | Speech editing and zero-shot TTS checkpoint. | NFE `10`–`32` (default `10`); CFG defaults to `1.2`. |
+| Model | Entry point (CLI / Python API) | Recommended use | Settings | Description |
+|---|---|---|---|---|
+| [`dots-studio/dots.tts-base`](https://huggingface.co/dots-studio/dots.tts-base) | `dots.tts` / `DotsTtsRuntime` | Pretraining baseline; fine-tuning base. | NFE `10`–`32` (default `10`); CFG `1.2`. | Base pretrained checkpoint. |
+| [`dots-studio/dots.tts-soar`](https://huggingface.co/dots-studio/dots.tts-soar) | `dots.tts` / `DotsTtsRuntime` | Highest speaker similarity; high-quality voice cloning; fine-tuning. | NFE `10`–`32` (default `10`); CFG `1.2`. | SOAR checkpoint on top of `dots.tts-base`. |
+| [`dots-studio/dots.tts-mf`](https://huggingface.co/dots-studio/dots.tts-mf) | `dots.tts` / `DotsTtsRuntime` | Latency- or concurrency-sensitive TTS. | NFE `4` recommended; CFG is fused into the student. | MeanFlow-distilled student from `dots.tts-soar`. |
+| [`dots-studio/dots.tts-mf-2steps`](https://huggingface.co/dots-studio/dots.tts-mf-2steps) | `dots.tts` / `DotsTtsRuntime` | Latency- or concurrency-sensitive TTS with fixed two-step inference. | Omit sampling options; fixed NFE `2` sCM. | Fixed two-step MeanFlow checkpoint. |
+| [`dots-studio/dots.tts-mf-1step`](https://huggingface.co/dots-studio/dots.tts-mf-1step) | `dots.tts` / `DotsTtsRuntime` | Lowest-cost path for latency- or concurrency-sensitive TTS. | Omit sampling options; fixed NFE `1`. | Fixed one-step MeanFlow checkpoint. |
+| [`dots-studio/dots.tts-mf-2steps-stts`](https://huggingface.co/dots-studio/dots.tts-mf-2steps-stts) | `DotsTtsRuntimeDoubleStreaming` | LLM interaction and duplex dialogue. | Omit sampling options; streaming cadence is artifact-defined. | Streaming-TTS checkpoint for double streaming. |
+| [`dots-studio/dots.tts.edit`](https://huggingface.co/dots-studio/dots.tts.edit) | `dots.tts.edit` / `DotsTtsEditRuntime` | Speech editing and edit-aware zero-shot TTS. | NFE `10`–`32` (default `10`); CFG `1.2`. | Instruction-controlled speech editing checkpoint. |
 
-Pass the repo id directly to `--model-name-or-path` or `DotsTtsRuntime.from_pretrained`; the snapshot is fetched on first use and cached locally. Fixed-step artifacts reject incompatible sampling overrides.
+Pass the repo id directly to the entry point shown above; the snapshot is fetched on first use and cached locally. Fixed-step artifacts reject incompatible sampling overrides.
 
 ### Python API
 
