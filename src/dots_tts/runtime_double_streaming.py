@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import torch
-import yaml
 from loguru import logger
 
 from dots_tts.data.pipelines.tts_pipeline import TTS_INTERLEAVE_PREFIX
@@ -27,52 +25,7 @@ INTERLEAVE_MODE_BUFFERED_RATIO = "buffered_ratio"
 INTERLEAVE_MODES = frozenset(
     {INTERLEAVE_MODE_ONE_TO_ONE, INTERLEAVE_MODE_BUFFERED_RATIO}
 )
-DEFAULT_INTERLEAVE_PATTERN = (INTERLEAVE_MODE_ONE_TO_ONE, None, 2, 1)
-
-
-def _walk_mappings(value: Any):
-    if isinstance(value, dict):
-        yield value
-        for child in value.values():
-            yield from _walk_mappings(child)
-        return
-    if isinstance(value, list):
-        for child in value:
-            yield from _walk_mappings(child)
-
-
-def _load_interleave_pattern_from_training_config(
-    pretrained_path: Path,
-) -> tuple[str, int | None, int, int] | None:
-    for parent in (pretrained_path, *pretrained_path.parents):
-        config_path = parent / "config.yml"
-        if not config_path.is_file():
-            continue
-        try:
-            with config_path.open("r", encoding="utf-8") as fin:
-                config = yaml.safe_load(fin)
-        except Exception as exc:  # pragma: no cover - defensive config fallback
-            logger.warning(
-                logc(
-                    "stream",
-                    "Failed to read double streaming interleave config: path={} error={}",
-                ),
-                config_path,
-                exc,
-            )
-            return None
-        for mapping in _walk_mappings(config):
-            mode = mapping.get("interleave_mode")
-            if mode not in INTERLEAVE_MODES:
-                continue
-            return (
-                str(mode),
-                mapping.get("initial_lookahead"),
-                int(mapping.get("ta_per_tta", 2)),
-                int(mapping.get("warmup_ta", 1)),
-            )
-        return None
-    return None
+DEFAULT_INTERLEAVE_PATTERN = (INTERLEAVE_MODE_ONE_TO_ONE, 1, 0, 0)
 
 
 def normalize_interleave_pattern(
@@ -100,6 +53,20 @@ def normalize_interleave_pattern(
     if warmup_count < 0:
         raise ValueError("warmup_ta must be non-negative.")
     return interleave_mode, lookahead, ta_count, warmup_count
+
+
+def _load_interleave_pattern_from_model_config(
+    runtime: DotsTtsRuntime,
+) -> tuple[str, int | None, int, int]:
+    streaming = getattr(runtime.model.config, "streaming", None)
+    if streaming is None:
+        return DEFAULT_INTERLEAVE_PATTERN
+    return (
+        str(streaming.interleave_mode),
+        streaming.initial_lookahead,
+        int(streaming.ta_per_tta),
+        int(streaming.warmup_ta),
+    )
 
 
 def interleave_text_quota(
@@ -183,10 +150,6 @@ class DoubleStreamingSession:
         speaker_scale: float = 1.5,
         eos_threshold: float = 0.8,
         initial_silence_audio_tokens: int | None = None,
-        interleave_mode: str | None = None,
-        initial_lookahead: int | None = None,
-        ta_per_tta: int | None = None,
-        warmup_ta: int | None = None,
     ) -> None:
         normalized_prompt_text = runtime._process_prompt_text(prompt_text)
         if (
@@ -225,24 +188,17 @@ class DoubleStreamingSession:
         self.speaker_scale = float(speaker_scale)
         self.eos_threshold = float(eos_threshold)
         self.max_generate_length = runtime.max_generate_length
-        config_pattern = (
-            _load_interleave_pattern_from_training_config(runtime.pretrained_path)
-            or DEFAULT_INTERLEAVE_PATTERN
-        )
+        config_pattern = _load_interleave_pattern_from_model_config(runtime)
         (
             self.interleave_mode,
             self.initial_lookahead,
             self.ta_per_tta,
             self.warmup_ta,
         ) = normalize_interleave_pattern(
-            interleave_mode=interleave_mode or config_pattern[0],
-            initial_lookahead=(
-                initial_lookahead
-                if initial_lookahead is not None
-                else config_pattern[1]
-            ),
-            ta_per_tta=ta_per_tta if ta_per_tta is not None else config_pattern[2],
-            warmup_ta=warmup_ta if warmup_ta is not None else config_pattern[3],
+            interleave_mode=config_pattern[0],
+            initial_lookahead=config_pattern[1],
+            ta_per_tta=config_pattern[2],
+            warmup_ta=config_pattern[3],
         )
         if initial_silence_audio_tokens is None:
             initial_silence_audio_tokens = (
@@ -730,10 +686,6 @@ class DotsTtsRuntimeDoubleStreaming(DotsTtsRuntime):
         speaker_scale: float = 1.5,
         eos_threshold: float = 0.8,
         initial_silence_audio_tokens: int | None = None,
-        interleave_mode: str | None = None,
-        initial_lookahead: int | None = None,
-        ta_per_tta: int | None = None,
-        warmup_ta: int | None = None,
     ) -> DoubleStreamingSession:
         return DoubleStreamingSession(
             self,
@@ -746,10 +698,6 @@ class DotsTtsRuntimeDoubleStreaming(DotsTtsRuntime):
             speaker_scale=speaker_scale,
             eos_threshold=eos_threshold,
             initial_silence_audio_tokens=initial_silence_audio_tokens,
-            interleave_mode=interleave_mode,
-            initial_lookahead=initial_lookahead,
-            ta_per_tta=ta_per_tta,
-            warmup_ta=warmup_ta,
         )
 
 

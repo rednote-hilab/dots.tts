@@ -98,33 +98,6 @@ def parse_args(argv=None):
         help="Maximum number of decoded audio patches in double streaming",
     )
     parser.add_argument(
-        "--interleave-mode",
-        choices=("one_to_one", "buffered_ratio"),
-        default=None,
-        help=(
-            "Override online interleave mode. Defaults to the checkpoint training "
-            "config when available, otherwise one_to_one."
-        ),
-    )
-    parser.add_argument(
-        "--initial-lookahead",
-        type=int,
-        default=None,
-        help="Override buffered-ratio first audio text-token lookahead.",
-    )
-    parser.add_argument(
-        "--warmup-ta",
-        type=int,
-        default=None,
-        help="Override buffered-ratio warmup TA steps.",
-    )
-    parser.add_argument(
-        "--ta-per-tta",
-        type=int,
-        default=None,
-        help="Override buffered-ratio steady cycle TA count per TTA step.",
-    )
-    parser.add_argument(
         "--normalize-text",
         action="store_true",
         help="Normalize text before tokenizer encode",
@@ -181,10 +154,6 @@ def main(argv=None):
         num_steps=args.num_steps,
         guidance_scale=args.guidance_scale,
         eos_threshold=args.eos_threshold,
-        interleave_mode=args.interleave_mode,
-        initial_lookahead=args.initial_lookahead,
-        warmup_ta=args.warmup_ta,
-        ta_per_tta=args.ta_per_tta,
     )
     logger.info(
         "Double streaming session: template_name={} interleave_mode={} "

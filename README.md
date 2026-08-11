@@ -187,7 +187,7 @@ Notes:
 
 ### Checkpoints
 
-Six pretrained checkpoints are released on Hugging Face. They share the same backbone; choose by task and the quality / inference-cost tradeoff, then use the relevant CLI pattern above.
+Seven pretrained checkpoints are released on Hugging Face. They share the same backbone; choose by task and the quality / inference-cost tradeoff, then use the relevant CLI pattern above.
 
 | Model | Description | Checkpoint-specific settings |
 |---|---|---|
@@ -196,11 +196,14 @@ Six pretrained checkpoints are released on Hugging Face. They share the same bac
 | [`dots-studio/dots.tts-mf`](https://huggingface.co/dots-studio/dots.tts-mf) | MeanFlow-distilled student from `dots.tts-soar`. | NFE `4` is recommended. Fewer steps noticeably reduce quality; higher step counts are supported. CFG is fused into the student, so `--guidance-scale` has no effect. |
 | [`dots-studio/dots.tts-mf-2steps`](https://huggingface.co/dots-studio/dots.tts-mf-2steps) | Built on `dots.tts-mf` with a fixed two-step schedule for exact train–inference alignment and additional refinements. Uses the dedicated sCM solver at inference. | Omit sampling options; the artifact selects its fixed NFE `2` sCM contract. |
 | [`dots-studio/dots.tts-mf-1step`](https://huggingface.co/dots-studio/dots.tts-mf-1step) | Also built on `dots.tts-mf`, extending fixed-step training to one-step generation with further training refinements. | Omit sampling options; the artifact supplies its fixed NFE `1` contract. |
+| [`dots-studio/dots.tts-mf-2steps-stts`](https://huggingface.co/dots-studio/dots.tts-mf-2steps-stts) | Streaming-TTS checkpoint built for double-streaming use. It uses the same fixed two-step sCM sampling contract as MF-2steps. | Omit sampling options; the artifact selects its fixed NFE `2` sCM contract and streaming cadence. |
 | [`dots-studio/dots.tts.edit`](https://huggingface.co/dots-studio/dots.tts.edit) | Speech editing and zero-shot TTS checkpoint. | NFE `10`–`32` (default `10`); CFG defaults to `1.2`. |
 
 Pass the repo id directly to `--model-name-or-path` or `DotsTtsRuntime.from_pretrained`; the snapshot is fetched on first use and cached locally. Fixed-step artifacts reject incompatible sampling overrides.
 
 ### Python API
+
+#### Basic TTS
 
 ```python
 from dots_tts.runtime import DotsTtsRuntime
@@ -226,26 +229,6 @@ sf.write("output.wav", result["audio"].float().cpu().squeeze().numpy(), result["
 The fixed-step MeanFlow artifacts read their sampling contracts directly from
 the model configuration, so CLI and Python calls do not need sampling options.
 
-The same edit contract is available from Python:
-
-```python
-from dots_tts.edit_runtime import DotsTtsEditRuntime
-
-edit_runtime = DotsTtsEditRuntime.from_pretrained(
-    "dots-studio/dots.tts.edit",
-    precision="bfloat16",
-)
-result = edit_runtime.generate_edit(
-    source_audio_path="/path/to/source.wav",
-    instruction='Hello <sub targ="small">brave</sub> world.',
-    # source_text and target_text are optional overrides.
-    # use_xvector defaults to "auto"; pass True or False to override it.
-    num_steps=10,
-    guidance_scale=1.2,
-)
-sf.write("edited.wav", result["audio"].float().cpu().squeeze().numpy(), result["sample_rate"])
-```
-
 For low-latency playback or streaming to a client, use `generate_stream` instead — it yields audio chunks (`torch.Tensor`, shape `(1, samples)`) as they are produced. Arguments are identical to `generate`:
 
 ```python
@@ -266,6 +249,74 @@ for chunk in stream:
 
 audio = torch.cat(chunks, dim=-1).squeeze().numpy()
 sf.write("output_stream.wav", audio, runtime.sample_rate)
+```
+
+#### Double Streaming
+
+For duplex dialogue systems where an upstream LLM emits text tokens incrementally, use the double-streaming runtime. It accepts one text token at a time and returns either an audio chunk or `None` when the acoustic stream needs more text context.
+
+The recommended released checkpoint for this path is [`dots-studio/dots.tts-mf-2steps-stts`](https://huggingface.co/dots-studio/dots.tts-mf-2steps-stts). Its sampling and streaming settings are stored in the artifact, so callers only provide text and optional prompt audio/text.
+
+The same contract is available from Python:
+
+```python
+import torch
+import soundfile as sf
+
+from dots_tts.runtime_double_streaming import DotsTtsRuntimeDoubleStreaming
+
+runtime = DotsTtsRuntimeDoubleStreaming.from_pretrained(
+    "dots-studio/dots.tts-mf-2steps-stts",
+    precision="bfloat16",
+    optimize=True,
+    max_generate_length=500,
+)
+
+text = "你好呀，今天想聊点什么？或者有什么我能帮你的？"
+text_token_ids = runtime.model.tokenizer.encode(text, add_special_tokens=False)
+
+session = runtime.start_double_streaming(
+    prompt_audio_path="/path/to/reference.wav",
+    prompt_text="The exact transcript spoken in the reference audio.",
+)
+
+chunks = []
+for token_id in text_token_ids:
+    chunk = session.push_text_token(token_id)
+    if chunk is not None:
+        chunks.append(chunk.detach().cpu())
+
+for chunk in session.finish_text():
+    chunks.append(chunk.detach().cpu())
+
+audio = torch.cat(chunks, dim=-1).float().squeeze().numpy()
+sf.write("double_streaming.wav", audio, runtime.sample_rate)
+```
+
+`--optimize` is strongly recommended for double streaming. It adds a one-time `torch.compile` warmup at load time, but the steady-state path uses cached/compiled LLM, DiT, and vocoder steps and substantially reduces RTF and streaming gaps.
+
+For a complete command-line example, see [`scripts/example_double_streaming.py`](scripts/example_double_streaming.py).
+
+#### Speech Editing
+
+The same edit contract is available from Python:
+
+```python
+from dots_tts.edit_runtime import DotsTtsEditRuntime
+
+edit_runtime = DotsTtsEditRuntime.from_pretrained(
+    "dots-studio/dots.tts.edit",
+    precision="bfloat16",
+)
+result = edit_runtime.generate_edit(
+    source_audio_path="/path/to/source.wav",
+    instruction='Hello <sub targ="small">brave</sub> world.',
+    # source_text and target_text are optional overrides.
+    # use_xvector defaults to "auto"; pass True or False to override it.
+    num_steps=10,
+    guidance_scale=1.2,
+)
+sf.write("edited.wav", result["audio"].float().cpu().squeeze().numpy(), result["sample_rate"])
 ```
 
 ### Web Demo (Gradio)
@@ -484,7 +535,7 @@ A frozen **AudioVAE** encodes 48 kHz mono waveform into a continuous latent and 
 - **LLM** — initialized from **Qwen2.5-1.5B-Base**, consumes BPE text directly (no phonemes), and emits one hidden state per audio step.
 - **AR flow-matching head** — a DiT that conditions on the LLM hidden state and the AR prefix to denoise the next VAE patch, with a frozen CAM++ speaker x-vector as side input.
 
-Two sequence layouts: *plain mode* places the full text as a prefix before the audio span (standard TTS); *[1T1A interleaved mode](scripts/example_double_streaming.py)* alternates one BPE token with one audio step, enabling low-latency streaming when driven by a duplex dialogue LLM. See the technical report for full architectural and training details.
+Two sequence layouts: *plain mode* places the full text as a prefix before the audio span (standard TTS); *[double-streaming interleaved mode](scripts/example_double_streaming.py)* lets a caller push BPE text tokens incrementally while audio patches are decoded online using the checkpoint's declared streaming cadence. See the technical report for full architectural and training details.
 
 ---
 
