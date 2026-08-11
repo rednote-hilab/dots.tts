@@ -5,10 +5,19 @@
 <p align="center">
   <a href="https://github.com/studio-dots-ai/dots.tts"><img src="https://img.shields.io/badge/GitHub-studio--dots--ai%2Fdots.tts-blue?logo=github" alt="GitHub"></a>
   <a href="https://huggingface.co/collections/dots-studio/dotstts"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-dots.tts%20collection-yellow" alt="Hugging Face"></a>
-  <a href="https://arxiv.org/abs/2606.07080"><img src="https://img.shields.io/badge/arXiv-Report-b31b1b?logo=arxiv&logoColor=white" alt="arXiv"></a>
-  <a href="https://huggingface.co/spaces/dots-studio/dots.tts"><img src="https://img.shields.io/badge/Playground-Live-orange" alt="Playground"></a>
-  <a href="https://studio-dots-ai.github.io/dots.tts-demo/"><img src="https://img.shields.io/badge/Demo%20Page-Live-red" alt="Demo Page"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-green" alt="License"></a>
+</p>
+
+<p align="center">
+  <a href="https://arxiv.org/abs/2606.07080"><img src="https://img.shields.io/badge/Report-TTS-b31b1b?logo=arxiv&logoColor=white" alt="TTS Report"></a>
+  <a href="https://huggingface.co/spaces/dots-studio/dots.tts"><img src="https://img.shields.io/badge/Playground-TTS-orange" alt="TTS Playground"></a>
+  <a href="https://studio-dots-ai.github.io/dots.tts-demo/"><img src="https://img.shields.io/badge/Demo%20Page-TTS-red" alt="TTS Demo Page"></a>
+</p>
+
+<p align="center">
+  <a href="https://arxiv.org/abs/2608.02673"><img src="https://img.shields.io/badge/Report-Edit-b31b1b?logo=arxiv&logoColor=white" alt="Edit Report"></a>
+  <a href="https://dots-studio-dots-tts-edit.hf.space/"><img src="https://img.shields.io/badge/Playground-Edit-orange" alt="Edit Playground"></a>
+  <a href="https://dots-studio-dots-tts-edit-demo.static.hf.space"><img src="https://img.shields.io/badge/Demo%20Page-Edit-red" alt="Edit Demo Page"></a>
 </p>
 
 **dots.tts** is a **2B-parameter fully continuous, end-to-end autoregressive (AR) text-to-speech system**. The backbone pairs a semantic encoder, an LLM, and an autoregressive flow-matching acoustic head over a **48 kHz** AudioVAE, with no discrete tokens anywhere in the pipeline.
@@ -673,7 +682,7 @@ Third-party ports and integrations of dots.tts, maintained by the community.
 
 ## 📖 Citation
 
-If you find dots.tts useful, please consider citing the technical report and starring the repository.
+If you find dots.tts or dots.tts.edit useful, please consider citing the corresponding technical report and starring the repository.
 
 ```bibtex
 @article{dotstts2026,
@@ -681,6 +690,15 @@ If you find dots.tts useful, please consider citing the technical report and sta
   author        = {dots.tts Team},
   year          = {2026},
   eprint        = {2606.07080},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.SD},
+}
+
+@article{wang2026dotsttsedit,
+  title         = {dots.tts.edit: Precisely Controlled Speech Editing with a Continuous Autoregressive Model},
+  author        = {Wang, Hankun and Li, Bohan and Lian, Shi and Gu, Xiaoyu and Peng, Jing and Zheng, Da and Zhang, Colin and Yu, Kai},
+  year          = {2026},
+  eprint        = {2608.02673},
   archivePrefix = {arXiv},
   primaryClass  = {cs.SD},
 }
