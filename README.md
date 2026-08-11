@@ -30,7 +30,7 @@ dots.tts achieves the best average performance on **Seed-TTS-Eval**, with WERs o
 
 * **[2026.08]** ⚡ Released `dots.tts-mf-2steps` and `dots.tts-mf-1step` for high-quality voice cloning at just 2 and 1 NFE. Both build on `dots.tts-mf` with fixed-step train–inference alignment. See [Checkpoints](#checkpoints).
 
-* **[2026.08]** 🚀 [SGLang Omni](https://github.com/sgl-project/sglang-omni) now fully supports dots.tts (`mf` / `soar` / `base`) with continuous batching, streaming PCM, and CUDA-graph decode. On Seed-TTS-Eval **EN** (1× H100, `dots.tts-mf`, `num_steps=4`), peak throughput reaches **4.64 req/s** / **19.36 audio_s/s** at concurrency 16 (WER **1.31%**). See [SGLang Omni Usage](#sglang-omni-usage) and the [cookbook](https://sgl-project.github.io/sglang-omni/cookbook/dots_tts.html).
+* **[2026.08]** 🚀 [SGLang Omni](https://github.com/sgl-project/sglang-omni) now fully supports dots.tts (`mf` / `soar` / `base`) with continuous batching, streaming PCM, and CUDA-graph decode. According to SGLang Omni cookbook, on Seed-TTS-Eval **EN** (1× H100, `dots.tts-mf`, `num_steps=4`), peak throughput reaches **4.76 req/s** / **19.86 audio_s/s** at concurrency 16 (WER **1.35%**). See [SGLang Omni Usage](#sglang-omni-usage) and the [cookbook](https://sgl-project.github.io/sglang-omni/cookbook/dots_tts.html).
 
 * **[2026.07]** 🚀 Shipped a **high-performance inference path** — under `--optimize`, `dots.tts-soar` reaches RTF p50 **0.20 / 0.18** and first-chunk latency **225 ms / 69 ms** (voice cloning / text-only); `dots.tts-mf` reaches **0.15 / 0.13** and **204 ms / 68 ms** respectively. See the [Efficiency](#-efficiency) section for details.
 
@@ -628,16 +628,17 @@ Bucket = total prompt + generated audio in latent patches (one patch ≈ 160 ms)
 
 Serving throughput on Seed-TTS-Eval **EN** against a single Omni server started from `examples/configs/dots_tts.yaml` (`max_running_requests=16`, bf16, `num_steps=4`, backbone decode CUDA graph + graph-captured acoustic tail). Each row is the mean of two runs, seed 42. Hardware: **1× H100**. Full write-up: [SGLang Omni cookbook — Performance](https://sgl-project.github.io/sglang-omni/cookbook/dots_tts.html#performance).
 
-| Concurrency | Throughput (req/s) | Mean latency | RTF (per-req) | audio_s/s | WER |
-|---:|---:|---:|---:|---:|---:|
-| 1 | 0.90 | 1.11 s | 0.284 | 3.58 | 1.06% |
-| 2 | 1.48 | 1.35 s | 0.329 | 6.16 | 1.25% |
-| 4 | 2.43 | 1.64 s | 0.399 | 10.14 | 1.36% |
-| 8 | 3.99 | 2.00 s | 0.486 | 16.65 | 1.31% |
-| 16 | 4.64 | 3.43 s | 0.830 | 19.36 | 1.31% |
-| 32 | 4.43 | 7.15 s | 1.797 | 18.47 | 1.27% |
 
-Zero failed requests in every run, and no sample above 50% WER. c=1 is a 50-sample latency probe; the other rows use the full 1,088-sample set. WER is measured with `Qwen/Qwen3-ASR-1.7B` on the first run of each row.
+| Concurrency | Samples | Throughput (req/s) | audio_s/s | Mean latency | RTF (per-req)| WER |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1088 | 0.935 | 3.726 | 1.070 | 0.275 | 1.241% |
+| 2 | 1088 | 1.556 | 6.493 | 1.286 | 0.314 | 1.256% |
+| 4 | 1088 | 2.493 | 10.407 | 1.603 | 0.390 | 1.264% |
+| 8 | 1088 | 3.875 | 16.173 | 2.062 | 0.502 | 1.323% |
+| 16 | 1088 | 4.760 | 19.859 | 3.344 | 0.812 | 1.348% |
+| 32 | 1088 | 4.988 | 20.818 | 6.344 | 1.596 | 1.331% |
+
+Zero failed requests in every run, and no sample above 50% WER. WER is measured with `Qwen/Qwen3-ASR-1.7B` on the first run of each row.
 
 To reproduce (server already running as above):
 
