@@ -28,7 +28,7 @@ dots.tts achieves the best average performance on **Seed-TTS-Eval**, with WERs o
 
 * **[2026.08]** 🔥 We have released **dots.tts.edit** for precise, instruction-controlled speech editing — download the [checkpoint](https://huggingface.co/dots-studio/dots.tts.edit), try the [Playground](https://dots-studio-dots-tts-edit.hf.space/), explore the [Demo Page](https://dots-studio-dots-tts-edit-demo.static.hf.space), and read the [paper](https://arxiv.org/abs/2608.02673).
 
-* **[2026.08]** ⚡ Released `dots.tts-mf-2steps` and `dots.tts-mf-1step` for high-quality voice cloning at just 2 and 1 NFE. Both build on `dots.tts-mf` with fixed-step train–inference alignment. See [Checkpoints](#checkpoints).
+* **[2026.08]** ⚡ Released `dots.tts-mf-2steps`, `dots.tts-mf-1step`, and `dots.tts-mf-2steps-stts` for high-quality voice cloning and double-streaming TTS. These checkpoints build on `dots.tts-mf` with fixed-step train–inference alignment. See [Checkpoints](#checkpoints).
 
 * **[2026.08]** 🚀 [SGLang Omni](https://github.com/sgl-project/sglang-omni) now fully supports dots.tts (`mf` / `soar` / `base`) with continuous batching, streaming PCM, and CUDA-graph decode. On Seed-TTS-Eval **EN** (1× H100, `dots.tts-mf`, `num_steps=4`), peak throughput reaches **4.64 req/s** / **19.36 audio_s/s** at concurrency 16 (WER **1.31%**). See [SGLang Omni Usage](#sglang-omni-usage) and the [cookbook](https://sgl-project.github.io/sglang-omni/cookbook/dots_tts.html).
 
@@ -565,6 +565,7 @@ Zero-shot, ~3 s reference prompt, scored by the benchmark's reference ASR and Wa
 | **dots.tts (MF, NFE=4)** | **2B** | 1.29 / 76.2 | 0.94 / 80.0 | 6.60 / 78.5 | 2.94 / 78.2 |
 | **dots.tts (MF-2steps)** | **2B** | 1.64 / 76.4 | 1.00 / 80.4 | 6.43 / 78.5 | 3.02 / 78.4 |
 | **dots.tts (MF-1step)** | **2B** | 1.59 / 76.6 | 1.02 / 80.2 | 6.63 / 78.1 | 3.08 / 78.3 |
+| **dots.tts (MF-2steps-STTS)** | **2B** | 1.41 / 75.3 | 1.04 / 79.2 | 7.83 / 76.9 | 3.43 / 77.1 |
 
 ### MiniMax Multilingual (24 languages)
 
