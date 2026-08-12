@@ -30,7 +30,7 @@ dots.tts achieves the best average performance on **Seed-TTS-Eval**, with WERs o
 
 * **[2026.08]** ⚡ Released `dots.tts-mf-2steps`, `dots.tts-mf-1step`, and `dots.tts-mf-2steps-stts` for high-quality voice cloning and double-streaming TTS. These checkpoints build on `dots.tts-mf` with fixed-step train–inference alignment. See [Checkpoints](#checkpoints).
 
-* **[2026.08]** 🚀 [SGLang Omni](https://github.com/sgl-project/sglang-omni) now fully supports dots.tts (`mf` / `soar` / `base`) with continuous batching, streaming PCM, and CUDA-graph decode. According to SGLang Omni cookbook, on Seed-TTS-Eval **EN** (1× H100, `dots.tts-mf`, `num_steps=4`), peak throughput reaches **4.76 req/s** / **19.86 audio_s/s** at concurrency 16 (WER **1.35%**). See [SGLang Omni Usage](#sglang-omni-usage) and the [cookbook](https://sgl-project.github.io/sglang-omni/cookbook/dots_tts.html).
+* **[2026.08]** 🚀 [SGLang Omni](https://github.com/sgl-project/sglang-omni) now supports dots.tts (`mf` / `mf-2steps` / `mf-2steps-stts` / `soar` / `base`) with streaming PCM and CUDA-graph backbone decode. MeanFlow, two-step sCM ([sglang-omni#1488](https://github.com/sgl-project/sglang-omni/pull/1488)), and STTS ([sglang-omni#1489](https://github.com/sgl-project/sglang-omni/pull/1489)) use continuous batching; STTS keeps requests with different text/audio phases in the same backbone batch. According to the SGLang Omni cookbook, on Seed-TTS-Eval **EN** (1× H100, `dots.tts-mf`, `num_steps=4`), peak throughput reaches **4.76 req/s** / **19.86 audio_s/s** at concurrency 16 (WER **1.35%**). See [SGLang Omni Usage](#sglang-omni-usage) and the [cookbook](https://sgl-project.github.io/sglang-omni/cookbook/dots_tts.html).
 
 * **[2026.07]** 🚀 Shipped a **high-performance inference path** — under `--optimize`, `dots.tts-soar` reaches RTF p50 **0.20 / 0.18** and first-chunk latency **225 ms / 69 ms** (voice cloning / text-only); `dots.tts-mf` reaches **0.15 / 0.13** and **204 ms / 68 ms** respectively. See the [Efficiency](#-efficiency) section for details.
 
@@ -433,7 +433,7 @@ Common MeanFlow flags:
 
 ### SGLang Omni Usage
 
-[SGLang Omni](https://github.com/sgl-project/sglang-omni) serves dots.tts behind an OpenAI-compatible `/v1/audio/speech` API with continuous batching (MeanFlow), streaming PCM, and CUDA-graph backbone decode. Full details live in the [SGLang Omni dots.tts cookbook](https://sgl-project.github.io/sglang-omni/cookbook/dots_tts.html).
+[SGLang Omni](https://github.com/sgl-project/sglang-omni) serves dots.tts behind an OpenAI-compatible `/v1/audio/speech` API with continuous batching for MeanFlow, two-step sCM, and STTS, plus streaming PCM and CUDA-graph backbone decode. Full details live in the [SGLang Omni dots.tts cookbook](https://sgl-project.github.io/sglang-omni/cookbook/dots_tts.html).
 
 Install Omni as in [SGLang Omni Installation](https://sgl-project.github.io/sglang-omni/get_started/installation.html), then from the `sglang-omni` checkout:
 
@@ -446,13 +446,31 @@ sgl-omni serve \
   --port 8000
 ```
 
+Use the model-specific config for two-step sCM or STTS:
+
+```bash
+# Fixed two-step sCM
+sgl-omni serve \
+  --model-path dots-studio/dots.tts-mf-2steps \
+  --config examples/configs/dots_tts_scm.yaml \
+  --port 8000
+
+# Streaming TTS with artifact-defined text/audio interleave
+sgl-omni serve \
+  --model-path dots-studio/dots.tts-mf-2steps-stts \
+  --config examples/configs/dots_tts_stts.yaml \
+  --port 8000
+```
+
 | Checkpoint | Omni config | Notes |
 |---|---|---|
 | [`dots-studio/dots.tts-mf`](https://huggingface.co/dots-studio/dots.tts-mf) | `examples/configs/dots_tts.yaml` | MeanFlow. Continuous batching (`max_running_requests=16`), `num_steps=4`. **Recommended for serving.** |
+| [`dots-studio/dots.tts-mf-2steps`](https://huggingface.co/dots-studio/dots.tts-mf-2steps) | `examples/configs/dots_tts_scm.yaml` | Artifact-defined sCM (Euler, NFE `2`, CFG `0`). Continuous batching (`max_running_requests=16`). |
+| [`dots-studio/dots.tts-mf-2steps-stts`](https://huggingface.co/dots-studio/dots.tts-mf-2steps-stts) | `examples/configs/dots_tts_stts.yaml` | Artifact-defined sCM and text/audio cadence. Mixed-phase continuous batching (`max_running_requests=16`). |
 | [`dots-studio/dots.tts-soar`](https://huggingface.co/dots-studio/dots.tts-soar) | `examples/configs/dots_tts_soar.yaml` | Flow matching + CFG. Single request at a time (`max_running_requests=1`), `num_steps=10`. |
 | [`dots-studio/dots.tts-base`](https://huggingface.co/dots-studio/dots.tts-base) | `examples/configs/dots_tts_soar.yaml` | Same as SOAR; pass `--model-path dots-studio/dots.tts-base`. |
 
-`dots-studio/dots.tts-*` weights are interchangeable via `--model-path`. Use the config file — it enables the compiled acoustic tail / vocoder and backbone decode CUDA graph. Continuous batching is MeanFlow-only.
+Use the config file — it enables the compiled acoustic tail / vocoder and backbone decode CUDA graph. MeanFlow, sCM, and STTS use continuous batching; SOAR/base remain single-request because their CFG conditional/unconditional branches are not yet implemented by the batched acoustic tail.
 
 Voice cloning (reference audio + transcript required):
 
@@ -493,6 +511,8 @@ with open("output.wav", "wb") as f:
 
 `ref_audio` / `ref_text` are accepted as a shorthand for `references[0].audio_path` / `references[0].text`.
 
+The same request format works with `dots.tts-mf-2steps` and `dots.tts-mf-2steps-stts`. STTS requires reference audio plus its transcript and reads its interleave cadence from the checkpoint. The low-level pipeline also accepts an already-collected `text_token_ids` (or `input_ids`) array; live per-token WebSocket append is not yet exposed by the OpenAI speech API.
+
 Streaming (raw 48 kHz PCM; set `"stream": true` and `"response_format": "pcm"`):
 
 ```bash
@@ -514,7 +534,7 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
 ffmpeg -f s16le -ar 48000 -ac 1 -i output.pcm output.wav
 ```
 
-Solver knobs (`speaker_scale`, `guidance_scale`, `eos_threshold`, `num_steps`, …) go under `stage_params.latent_engine` — not as top-level fields. `temperature` / `top_p` / `top_k` do not apply (continuous latent; no token sampler). MeanFlow fixes `num_steps=4` engine-wide for continuous batching.
+Solver knobs (`speaker_scale`, `guidance_scale`, `eos_threshold`, `num_steps`, …) go under `stage_params.latent_engine` — not as top-level fields. `temperature` / `top_p` / `top_k` do not apply (continuous latent; no token sampler). MeanFlow fixes `num_steps=4` engine-wide for continuous batching. The two-step sCM and STTS checkpoints read Euler, NFE `2`, CFG `0`, `tau_mid`, and (for STTS) cadence from the artifact and reject incompatible overrides.
 
 ## 💡 Usage Tips
 
