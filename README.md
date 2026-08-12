@@ -189,15 +189,15 @@ Notes:
 
 Seven pretrained checkpoints are released on Hugging Face. They share the same backbone; choose by task and runtime entry point.
 
-| Model | Entry point (CLI / Python API) | Recommended use | Settings | Description |
-|---|---|---|---|---|
-| [`dots-studio/dots.tts-base`](https://huggingface.co/dots-studio/dots.tts-base) | `dots.tts` /<br>`DotsTtsRuntime` | Pretraining baseline; fine-tuning base. | NFE `10`–`32` (default `10`); CFG `1.2`. | Base pretrained checkpoint. |
-| [`dots-studio/dots.tts-soar`](https://huggingface.co/dots-studio/dots.tts-soar) | `dots.tts` /<br>`DotsTtsRuntime` | Highest speaker similarity; high-quality voice cloning; fine-tuning. | NFE `10`–`32` (default `10`); CFG `1.2`. | SOAR checkpoint on top of `dots.tts-base`. |
-| [`dots-studio/dots.tts-mf`](https://huggingface.co/dots-studio/dots.tts-mf) | `dots.tts` /<br>`DotsTtsRuntime` | Latency- or concurrency-sensitive TTS. | NFE `4` recommended; CFG fused. | MeanFlow-distilled student from `dots.tts-soar`. |
-| [`dots-studio/dots.tts-mf-2steps`](https://huggingface.co/dots-studio/dots.tts-mf-2steps) | `dots.tts` /<br>`DotsTtsRuntime` | Latency- or concurrency-sensitive TTS. | Omit sampling options; fixed NFE `2` sCM. | Built on `dots.tts-mf` with a fixed two-step schedule for exact train–inference alignment and additional refinements. Uses the dedicated sCM solver at inference. |
-| [`dots-studio/dots.tts-mf-1step`](https://huggingface.co/dots-studio/dots.tts-mf-1step) | `dots.tts` /<br>`DotsTtsRuntime` | Latency- or concurrency-sensitive TTS. | Omit sampling options; fixed NFE `1`. | Built on `dots.tts-mf`, extending fixed-step training to one-step generation with further training refinements. |
-| [`dots-studio/dots.tts-mf-2steps-stts`](https://huggingface.co/dots-studio/dots.tts-mf-2steps-stts) | - /<br>`DotsTtsRuntimeDoubleStreaming` | LLM interaction and duplex dialogue. | Omit sampling options; streaming cadence is artifact-defined. | Streaming-TTS checkpoint built for double-streaming use. It uses the same fixed two-step sCM sampling contract as `dots.tts-mf-2steps`. |
-| [`dots-studio/dots.tts.edit`](https://huggingface.co/dots-studio/dots.tts.edit) | `dots.tts.edit` /<br>`DotsTtsEditRuntime` | Speech editing. | NFE `10`–`32` (default `10`); CFG `1.2`. | Instruction-controlled speech editing checkpoint built on `dots.tts-base`. |
+| Model and entry point | Recommended use | Settings | Description |
+|---|---|---|---|
+| [`dots-studio/dots.tts-base`](https://huggingface.co/dots-studio/dots.tts-base)<br>CLI: `dots.tts`<br>Python: `DotsTtsRuntime` | Pretraining baseline; fine-tuning base. | NFE `10`–`32` (default `10`); CFG `1.2`. | Base pretrained checkpoint. |
+| [`dots-studio/dots.tts-soar`](https://huggingface.co/dots-studio/dots.tts-soar)<br>CLI: `dots.tts`<br>Python: `DotsTtsRuntime` | Highest speaker similarity; high-quality voice cloning; fine-tuning. | NFE `10`–`32` (default `10`); CFG `1.2`. | SOAR checkpoint on top of `dots.tts-base`. |
+| [`dots-studio/dots.tts-mf`](https://huggingface.co/dots-studio/dots.tts-mf)<br>CLI: `dots.tts`<br>Python: `DotsTtsRuntime` | Latency- or concurrency-sensitive TTS. | NFE `4` recommended; CFG fused. | MeanFlow-distilled student from `dots.tts-soar`. |
+| [`dots-studio/dots.tts-mf-2steps`](https://huggingface.co/dots-studio/dots.tts-mf-2steps)<br>CLI: `dots.tts`<br>Python: `DotsTtsRuntime` | Latency- or concurrency-sensitive TTS. | Omit sampling options; fixed NFE `2` sCM. | Built on `dots.tts-mf` with a fixed two-step schedule for exact train–inference alignment and additional refinements. Uses the dedicated sCM solver at inference. |
+| [`dots-studio/dots.tts-mf-1step`](https://huggingface.co/dots-studio/dots.tts-mf-1step)<br>CLI: `dots.tts`<br>Python: `DotsTtsRuntime` | Latency- or concurrency-sensitive TTS. | Omit sampling options; fixed NFE `1`. | Built on `dots.tts-mf`, extending fixed-step training to one-step generation with further training refinements. |
+| [`dots-studio/dots.tts-mf-2steps-stts`](https://huggingface.co/dots-studio/dots.tts-mf-2steps-stts)<br>CLI: -<br>Python: `DotsTtsRuntimeDoubleStreaming` | LLM interaction and duplex dialogue. | Omit sampling options; streaming cadence is artifact-defined. | Streaming-TTS checkpoint built for double-streaming use. Uses the same fixed two-step sCM sampling contract as `dots.tts-mf-2steps`. |
+| [`dots-studio/dots.tts.edit`](https://huggingface.co/dots-studio/dots.tts.edit)<br>CLI: `dots.tts.edit`<br>Python: `DotsTtsEditRuntime` | Speech editing. | NFE `10`–`32` (default `10`); CFG `1.2`. | Instruction-controlled speech editing checkpoint built on `dots.tts-base`. |
 
 Pass the repo id directly to the entry point shown above; the snapshot is fetched on first use and cached locally. Fixed-step artifacts reject incompatible sampling overrides.
 
