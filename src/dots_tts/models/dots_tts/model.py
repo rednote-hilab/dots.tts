@@ -1222,10 +1222,13 @@ class DotsTtsModel(nn.Module):
             cfg_sequence = state.fm_cfg_sequence
             if solver_mode == "flow_matching" and cfg_sequence is None:
                 raise RuntimeError("FM cfg static buffer is not initialized.")
+            solver_cfg_sequence = (
+                cfg_sequence if solver_mode == "flow_matching" else None
+            )
             audio_patch = self._get_dit_solver(solver_mode=solver_mode).decode_next(
                 state.fm_dit_state,
                 sequence=sequence,
-                cfg_sequence=None if solver_mode == "scm" else cfg_sequence,
+                cfg_sequence=solver_cfg_sequence,
                 fm_seq_len=state.fm_seq_len,
                 null_g_cond=null_g_cond,
                 g_cond=g_cond,

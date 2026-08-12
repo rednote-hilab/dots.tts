@@ -1521,7 +1521,10 @@ class DiTSolver:
             raise RuntimeError(
                 "Cannot decode audio before any conditioning state has been prefetched."
             )
-        if not self.meanflow:
+        if self.meanflow:
+            if cfg_sequence is not None:
+                raise ValueError("MeanFlow DiTSolver does not accept cfg_sequence.")
+        else:
             if cfg_sequence is None:
                 raise ValueError("FlowMatching DiTSolver requires cfg_sequence.")
             if guidance_scale is None:
