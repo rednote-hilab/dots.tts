@@ -739,6 +739,7 @@ Third-party ports and integrations of dots.tts, maintained by the community.
 | Project | Description | Maintainer |
 |---|---|---|
 | [sglang-omni](https://github.com/sgl-project/sglang-omni) | High-concurrency serving for dots.tts ([cookbook](https://sgl-project.github.io/sglang-omni/cookbook/dots_tts.html)) | [@sgl-project](https://github.com/sgl-project) |
+| [audio.cpp](https://github.com/0xShug0/audio.cpp) | ggml-based unified C++ inference framework — CPU/CUDA/Vulkan/Metal, CLI & server, no Python | [@0xShug0](https://github.com/0xShug0)
 | [dots-tts-mlx](https://github.com/sb1992/dots-tts-mlx) | Pure-MLX inference port for Apple Silicon (Python) | [@sb1992](https://github.com/sb1992) |
 | [mlx-swift-dots-tts](https://github.com/sammcj/mlx-swift-dots-tts) | Native MLX Swift port for Apple Silicon (no Python runtime) | [@sammcj](https://github.com/sammcj) |
 | [Dots-TTS-ComfyUI](https://github.com/Saganaki22/Dots-TTS-ComfyUI) | ComfyUI custom nodes for TTS, voice cloning, and Whisper transcription | [@Saganaki22](https://github.com/Saganaki22) |
